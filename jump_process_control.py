@@ -16,9 +16,9 @@ print(f"Using device: {device}")
 
 class Solver(object):
     def __init__(self,):
-        self.valid_size = 512
-        self.batch_size = 256
-        self.num_iterations = 5000
+        self.valid_size = 513
+        self.B = 256 # batch size
+        self.num_iterations = 5000 # number of epochs to train
         self.logging_frequency = 200
         self.lr_values = [5e-3, 5e-3, 5e-3]
         
@@ -26,8 +26,8 @@ class Solver(object):
         self.config = Config()
 
         self.model = WholeNet().to(device) 
-        self.y_init = self.model.y_init
-        print("y_intial: ", self.y_init.detach().cpu().numpy())  
+        self.y_init_1d = self.model.y_init_1d
+        print("y_initial: ", self.y_init_1d.shape)  # (1, d)
         
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr_values[0], eps=1e-8)
         self.scheduler = torch.optim.lr_scheduler.MultiStepLR(
@@ -66,17 +66,17 @@ class Solver(object):
             if step % self.logging_frequency == 0:
                 with torch.no_grad():
                     loss, cost, ratio = self.model(valid_dW, valid_jump_times, valid_jump_sizes, valid_support_points, training = False)
-                    y_init = self.y_init.detach().cpu().numpy()[0][0]
+                    y_init_1d = self.y_init_1d.detach().cpu().numpy()[0][0]
                     elapsed_time = time.time() - start_time
-                    training_history.append([step, cost.item(), y_init, loss.item(), ratio.item()])
-                    print(f"step: {step:5d}, loss: {loss.item():.4e}, Y0: {y_init:.4e}, cost: {cost.item():.4e}, "
+                    training_history.append([step, cost.item(), y_init_1d, loss.item(), ratio.item()])
+                    print(f"step: {step:5d}, loss: {loss.item():.4e}, Y0: {y_init_1d:.4e}, cost: {cost.item():.4e}, "
                           f"elapsed time: {int(elapsed_time):3d}, ratio: {ratio.item():.4e}")
 
             # sample new train data (we do this every iteration!)
-            dW = self.config.sample(self.batch_size).to(device)  
-            jump_times = self.config.sample_jump_times(self.batch_size).to(device)
-            jump_sizes = self.config.sample_jump_sizes(self.batch_size, shape_to_sample=jump_times.shape).to(device)
-            support_points = self.config.sample_support_points(self.batch_size).to(device)
+            dW = self.config.sample(self.B).to(device)  
+            jump_times = self.config.sample_jump_times(self.B).to(device)
+            jump_sizes = self.config.sample_jump_sizes(self.B, shape_to_sample=jump_times.shape).to(device)
+            support_points = self.config.sample_support_points(self.B).to(device)
             
             self.train_step(dW, jump_times, jump_sizes, support_points)  
             
@@ -107,7 +107,7 @@ class WholeNet(torch.nn.Module):
         self.config = Config()
         
         # Initialize y_init as a parameter
-        self.y_init = torch.nn.Parameter(
+        self.y_init_1d = torch.nn.Parameter(
             torch.randn(1, self.config.dim_y, dtype=torch.float32).to(device),  # float32 and correct device
             requires_grad = True # needed to find this value.
         )
@@ -115,18 +115,25 @@ class WholeNet(torch.nn.Module):
         self.u_net = FNNetU()
         self.r_net = FFNetR()
 
-    def forward(self, dw, jump_times, jump_sizes, support_points, training=True):
+    def forward(self, dw_BdT, jump_times_BdN_j, jump_sizes_BdN_j, support_points_Bd, training = True):
         # Ensure input tensor is on the correct device
-        dw = dw.to(device)
-        jump_times = jump_times.to(device)
-        jump_sizes = jump_sizes.to(device)
-        support_points = support_points.to(device)
+        
+        dw_BdT = dw_BdT.to(device)
+        #print("dw shape: ", dw.shape)  # (B, d, T)
+        jump_times_BdN_j = jump_times_BdN_j.to(device)
+        print("jump_times shape: ", jump_times_BdN_j.shape)  # (B, d, N_j)
+        jump_sizes_BdN_j = jump_sizes_BdN_j.to(device)
+        print("jump_sizes shape: ", jump_sizes_BdN_j.shape)
+        # (B, d, N_j)
+        support_points_Bd = support_points_Bd.to(device)
+        print("support_points shape: ", support_points_Bd.shape)
+        # (B, d)
         
         x_init = torch.ones(1, self.config.dim_x, dtype=torch.float32).to(device) * 0.0
         time_stamp = np.arange(0, self.config.num_time_interval) * self.config.delta_t
-        all_one_vec = torch.ones(dw.shape[0], 1, dtype=torch.float32).to(device)
-        x_Bd= torch.matmul(all_one_vec, x_init)
-        y_Bd = torch.matmul(all_one_vec, self.y_init)
+        all_one_vec = torch.ones(dw_BdT.shape[0], 1, dtype=torch.float32).to(device)
+        x_Bd = torch.matmul(all_one_vec, x_init)
+        y_Bd = torch.matmul(all_one_vec, self.y_init_1d)
         print("y shape: ", y_Bd.shape)  # (B, M)
         l = 0.0  # The cost functional
         H = 0.0  # The constraint term
@@ -142,25 +149,16 @@ class WholeNet(torch.nn.Module):
             l = l + self.config.f_fn(time_stamp[t], x_Bd, u_Bd) * self.config.delta_t
             H = H + self.config.Hu_fn(time_stamp[t], x_Bd, y_Bd, z, u_Bd)
             b_ = self.config.b_fn(time_stamp[t], x_Bd, u_Bd)
-            print("b_ shape: ", b_.shape)  # (B, M)
+            # print("b_ shape: ", b_.shape)  # (B, d)
             sigma_ = self.config.sigma_fn(time_stamp[t], x_Bd, u_Bd)
             f_ = self.config.Hx_fn(time_stamp[t], x_Bd, u_Bd, y_Bd, z)
             
-            ### JUMP TERM ###
-            # jump times are sorted, we need to find which jump_times[time_index-1] < t <= jump_times[time_index]
+            ### JUMP TERM for x update ###
             # we will do it with bit masking : first create a mask for jump times <= t
-            mask_lower = (jump_times[:, :, :] <= time_stamp[t])
-            #print("mask shape: ", mask_lower.shape)  # (B, M)
-            # then we need to find the mask: t < jump_times
-            mask_upper = (jump_times[:, :, :] > time_stamp[t])
-            #print("mask shape: ", mask_upper.shape)
+            mask_lower = (jump_times_BdN_j[:, :, :] <= time_stamp[t])
             
-            # total mask
-            mask = mask_lower * mask_upper
-            print("masks [0,0] : ", mask_upper[0, 0, :], mask_lower[0, 0, :], mask[0, 0, :])
-
-            x_Bd= x_Bd + b_ * self.config.delta_t + sigma_ * dw[:, :, t]
-            y_Bd = y_Bd - f_ * self.config.delta_t + z * dw[:, :, t]
+            x_Bd = x_Bd + b_ * self.config.delta_t + sigma_ * dw_BdT[:, :, t]
+            y_Bd = y_Bd - f_ * self.config.delta_t + z * dw_BdT[:, :, t]
 
         delta = y_Bd + self.config.hx_tf(self.config.total_T, x_Bd)
         loss = torch.mean(torch.sum(delta**2, 1, keepdim=True) + LAMBDA * H)
@@ -180,7 +178,6 @@ class FNNetQ(torch.nn.Module):
         # num_hiddens = [self.config.dim_x+10, self.config.dim_x+10, self.config.dim_x+10]
         
         num_hiddens = [self.config.dim_x + 10]
-        
         # Create layer lists 
         self.bn_layers = torch.nn.ModuleList([
             torch.nn.BatchNorm1d(
@@ -397,10 +394,10 @@ class Config(object):
     """Define the configs in the systems"""
     def __init__(self):
         super(Config, self).__init__()
-        self.dim_x = 100
-        self.dim_y = 100
-        self.dim_z = 100
-        self.dim_u = 100
+        self.dim_x = 100 # dimension of the process = d
+        self.dim_y = 100 # dimension of the process = d
+        self.dim_z = 100 # dimension of the process = d
+        self.dim_u = 100 # dimension of the process = d
         
         self.lambda_jumps = 3
         self.jump_mean = 0.5
@@ -412,11 +409,13 @@ class Config(object):
         self.sqrth = np.sqrt(self.delta_t)
         self.t_stamp = np.arange(0, self.num_time_interval) * self.delta_t
 
+    ##### SAMPLING FUNCTIONS: for the random walk and jump process #####
     def sample(self, num_sample):
+        # sample dW from a normal distribution
         dw_sample = normal.rvs(size=[num_sample, self.dim_x, self.num_time_interval]) * self.sqrth
-        dw_sample = dw_sample.astype(np.float32)  # Ensure float32
-        dw_sample_tensor = torch.tensor(dw_sample, dtype=torch.float32).to(device)  # Ensure tensor is on the correct device
-        return dw_sample_tensor
+        dw_sample_tensor = torch.tensor(dw_sample, dtype=torch.float32).to(device)  
+        # print("sampled dW: ", dw_sample_tensor.shape)  
+        return dw_sample_tensor # (B, d, num_time_interval)
     
     def sample_jump_times(self, num_sample):
         # sample jump times uniformly in [0, T]
@@ -433,29 +432,26 @@ class Config(object):
             
         # sort the jump times
         jump_times = np.sort(jump_times, axis=2)
-        # print("sampled jump times: ", jump_times.shape)  # (B, M, N_j)
-        
-        jump_times_tensor = torch.tensor(jump_times, dtype=torch.float32).to(device)  # Ensure tensor is on the correct device
+        print("sampled jump times: ", jump_times.shape)  # (B, d, N_j)
+        jump_times_tensor = torch.tensor(jump_times, dtype=torch.float32).to(device)  
         return jump_times_tensor
     
     def sample_jump_sizes(self, num_sample, shape_to_sample=None):
         # sample jump sizes from a normal distribution
-        jump_sizes = np.random.normal(0, 1, size=(shape_to_sample))
-        jump_sizes = jump_sizes.astype(np.float32)
         
-        # print("sampled jump sizes: ", jump_sizes.shape)  #  (B, M, N_j)
+        jump_sizes = np.random.normal(self.jump_mean, self.jump_std, size=(shape_to_sample))
+        jump_sizes = jump_sizes.astype(np.float32)
+        # print("sampled jump sizes: ", jump_sizes.shape)  #  (B, d, N_j)
         jump_sizes_tensor = torch.tensor(jump_sizes, dtype=torch.float32).to(device)
         return jump_sizes_tensor
     
     def sample_support_points(self, num_sample):
         # Sample points to calculate integrals w.r.t. \nu(dz)
         support_points = np.random.uniform(0, 1, size=(num_sample, self.dim_x))
-        support_points = support_points.astype(np.float32)
-        
         support_points_tensor = torch.tensor(support_points, dtype=torch.float32).to(device)  # Ensure tensor is on the correct device
         return support_points_tensor
         
-
+    ##### COST FUNCTIONAL AND HAMILTONIAN #####
     def f_fn(self, t, x, u):
         return torch.sum(u ** 2, dim=1, keepdim=True)
 
