@@ -12,11 +12,16 @@ torch.set_default_dtype(torch.float32)
 
 # Check for available devices 
 device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
-print(f"Using device: {device}")
+print("-" * 5, f"\n\nUsing device: {device} \n\n", "-" * 5)
+# Set random seed for reproducibility
+torch.manual_seed(0)
+np.random.seed(0)
+# Set the default tensor type to float32
+torch.set_default_tensor_type(torch.FloatTensor)
 
 class Solver(object):
     def __init__(self,):
-        self.valid_size = 513
+        self.valid_size = 513 # valid batch size.
         self.B = 256 # batch size
         self.num_iterations = 5000 # number of epochs to train
         self.logging_frequency = 200
@@ -40,17 +45,19 @@ class Solver(object):
         self.original_lr = self.lr_values[0]
 
     def train(self):
-        """Training the model"""
+        """
+        Training loop. for each iteration we sample new stochastic process. evals are done every 200 iterations on the same data
+        
+        with every iteration we call on the train_step, which does a pass through WholeNet and then backprop.
+        
+        """
         start_time = time.time()
         training_history = []
         
         #### Validation data: ###
-        dW = self.config.sample(self.valid_size)
-        print("validation dW shape: ", dW.shape) # (512, 100, 25) (M = valid size, d,T)
-        t_jump = self.config.sample_jump_times(self.valid_size)
-        print("validation t_jump shape: ", t_jump.shape) # (512, 100, 25) (M = valid size, d,T)
+        dW = self.config.sample(self.valid_size) # (513, 100, 25) (B_val = self.valid_size, d,T)
+        t_jump = self.config.sample_jump_times(self.valid_size)  # (513, 100, N_j) (B_val = self.valid_size, d, N_j)
         jump_size = self.config.sample_jump_sizes(self.valid_size, shape_to_sample=t_jump.shape)
-        print("validation jump_size shape: ", jump_size.shape)
         valid_dW = dW.to(device)  # Ensure data is on the correct device
         valid_jump_times = t_jump.to(device)
         valid_jump_sizes = jump_size.to(device) 
@@ -85,7 +92,7 @@ class Solver(object):
         self.training_history = training_history
 
     def train_step(self, train_data, jump_times, jump_sizes, support_points):
-        """Updating the gradients"""
+        """pass thhrough the model and backprop"""
         self.optimizer.zero_grad()
         loss, _, _ = self.model(train_data, jump_times, jump_sizes, support_points)
         loss.backward()
@@ -116,12 +123,12 @@ class WholeNet(torch.nn.Module):
         self.r_net = FFNetR()
 
     def forward(self, dw_BdT, jump_times_BdN_j, jump_sizes_BdN_j, support_points_Bd, training = True):
-        # Ensure input tensor is on the correct device
         
-        dw_BdT = dw_BdT.to(device)
-        jump_times_BdN_j = jump_times_BdN_j.to(device)
-        jump_sizes_BdN_j = jump_sizes_BdN_j.to(device)
-        support_points_Bd = support_points_Bd.to(device)
+        # Ensure input tensor is on the correct device. I dont think this is needed since we do it in the config
+        # dw_BdT = dw_BdT.to(device)
+        # jump_times_BdN_j = jump_times_BdN_j.to(device)
+        # jump_sizes_BdN_j = jump_sizes_BdN_j.to(device)
+        # support_points_Bd = support_points_Bd.to(device)
         
         x_init = torch.ones(1, self.config.dim_x, dtype=torch.float32).to(device) * 0.0
         time_stamp = np.arange(0, self.config.num_time_interval) * self.config.delta_t
@@ -150,8 +157,8 @@ class WholeNet(torch.nn.Module):
             # we will do it with bit masking : first create a mask for jump times <= t
             mask_lower = (jump_times_BdN_j[:, :, :] <= time_stamp[t])
             
-            x_Bd = x_Bd + b_Bd * self.config.delta_t + sigma_ * dw_BdT[:, :, t]
-            y_Bd = y_Bd - f_ * self.config.delta_t + q_Bd * dw_BdT[:, :, t]
+            x_Bd = x_Bd + b_Bd * self.config.delta_t + sigma_ * dw_BdT[:, :, t]         # change this  <<---
+            y_Bd = y_Bd - f_ * self.config.delta_t + q_Bd * dw_BdT[:, :, t]             # change this  <<---
 
         delta_Bd = y_Bd + self.config.hx_tf(self.config.total_T, x_Bd) 
         loss = torch.mean(torch.sum(delta_Bd ** 2, 1, keepdim=True) + LAMBDA * H_B1)
@@ -420,26 +427,23 @@ class Config(object):
             jump_times[m, :, :nr_jumps[m]] = np.random.uniform(0, self.total_T, size=(self.dim_x, nr_jumps[m]))
             jump_times[m, :, nr_jumps[m]:] = self.total_T  # Fill the rest with T   
             
-        # sort the jump times
-        jump_times = np.sort(jump_times, axis=2)
-        # print("sampled jump times: ", jump_times.shape)  # (B, d, N_j)
+        
+        jump_times = np.sort(jump_times, axis=2) # sort the jump times
         jump_times_tensor = torch.tensor(jump_times, dtype=torch.float32).to(device)  
-        return jump_times_tensor
+        return jump_times_tensor # (B, d, N_j)
     
     def sample_jump_sizes(self, num_sample, shape_to_sample=None):
         # sample jump sizes from a normal distribution
-        
         jump_sizes = np.random.normal(self.jump_mean, self.jump_std, size=(shape_to_sample))
         jump_sizes = jump_sizes.astype(np.float32)
-        # print("sampled jump sizes: ", jump_sizes.shape)  #  (B, d, N_j)
         jump_sizes_tensor = torch.tensor(jump_sizes, dtype=torch.float32).to(device)
-        return jump_sizes_tensor
+        return jump_sizes_tensor  #  (B, d, N_j)
     
     def sample_support_points(self, num_sample):
         # Sample points to calculate integrals w.r.t. \nu(dz)
         support_points = np.random.uniform(0, 1, size=(num_sample, self.dim_x))
         support_points_tensor = torch.tensor(support_points, dtype=torch.float32).to(device)  # Ensure tensor is on the correct device
-        return support_points_tensor
+        return support_points_tensor # (B, d) <---- IS THIS CORRECT? @Rafael
         
     ##### COST FUNCTIONAL AND HAMILTONIAN #####
     def f_fn(self, t, x, u):
