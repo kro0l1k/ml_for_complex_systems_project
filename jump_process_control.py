@@ -5,7 +5,7 @@ import math
 from scipy.stats import multivariate_normal as normal
 import matplotlib.pyplot as plt
 
-LAMBDA = 0.05
+LAMBDA = 0.05 
 
 # Set default tensor type to float
 torch.set_default_dtype(torch.float32)
@@ -97,9 +97,9 @@ class WholeNet(torch.nn.Module):
         
         naming convention:
         B = batch size
-        M = number of monte carlo samples
         d = dimension of the process d = 100
-        T = time horizon
+        T = number of time subintervals = 25
+        N_j = number of jumps (varies for each sample, currently about 10)
         
     """
     def __init__(self):
@@ -119,53 +119,46 @@ class WholeNet(torch.nn.Module):
         # Ensure input tensor is on the correct device
         
         dw_BdT = dw_BdT.to(device)
-        #print("dw shape: ", dw.shape)  # (B, d, T)
         jump_times_BdN_j = jump_times_BdN_j.to(device)
-        print("jump_times shape: ", jump_times_BdN_j.shape)  # (B, d, N_j)
         jump_sizes_BdN_j = jump_sizes_BdN_j.to(device)
-        print("jump_sizes shape: ", jump_sizes_BdN_j.shape)
-        # (B, d, N_j)
         support_points_Bd = support_points_Bd.to(device)
-        print("support_points shape: ", support_points_Bd.shape)
-        # (B, d)
         
         x_init = torch.ones(1, self.config.dim_x, dtype=torch.float32).to(device) * 0.0
         time_stamp = np.arange(0, self.config.num_time_interval) * self.config.delta_t
         all_one_vec = torch.ones(dw_BdT.shape[0], 1, dtype=torch.float32).to(device)
         x_Bd = torch.matmul(all_one_vec, x_init)
         y_Bd = torch.matmul(all_one_vec, self.y_init_1d)
-        print("y shape: ", y_Bd.shape)  # (B, M)
+        
         l = 0.0  # The cost functional
         H = 0.0  # The constraint term
         J = 0.0  # The jump term
         
         for t in range(0, self.config.num_time_interval):
             data = (time_stamp[t], x_Bd)
-            print("data shape: ", time_stamp[t], x_Bd.shape)  # (B, M)
             u_Bd = self.u_net(data) 
-            print("u shape: ", u_Bd.shape)  # (B, M)
-            z = self.q_net(data)
+            q_Bd = self.q_net(data) # shouldnt this be of shape (B,d,d,)????
 
-            l = l + self.config.f_fn(time_stamp[t], x_Bd, u_Bd) * self.config.delta_t
-            H = H + self.config.Hu_fn(time_stamp[t], x_Bd, y_Bd, z, u_Bd)
-            b_ = self.config.b_fn(time_stamp[t], x_Bd, u_Bd)
+            l_B1 = l + self.config.f_fn(time_stamp[t], x_Bd, u_Bd) * self.config.delta_t # (B, 1)
+            H_B1 = H + self.config.Hu_fn(time_stamp[t], x_Bd, y_Bd, q_Bd, u_Bd) # (B, 1)
+            b_Bd = self.config.b_fn(time_stamp[t], x_Bd, u_Bd) # (B, d)
             # print("b_ shape: ", b_.shape)  # (B, d)
-            sigma_ = self.config.sigma_fn(time_stamp[t], x_Bd, u_Bd)
-            f_ = self.config.Hx_fn(time_stamp[t], x_Bd, u_Bd, y_Bd, z)
+            sigma_ = self.config.sigma_fn(time_stamp[t], x_Bd, u_Bd) # float
+            f_ = self.config.Hx_fn(time_stamp[t], x_Bd, u_Bd, y_Bd, q_Bd)
+            # print("f_ shape: ", f_.shape)  # (B, d)  ### this might be a problem. currently its a scalar
             
             ### JUMP TERM for x update ###
             # we will do it with bit masking : first create a mask for jump times <= t
             mask_lower = (jump_times_BdN_j[:, :, :] <= time_stamp[t])
             
-            x_Bd = x_Bd + b_ * self.config.delta_t + sigma_ * dw_BdT[:, :, t]
-            y_Bd = y_Bd - f_ * self.config.delta_t + z * dw_BdT[:, :, t]
+            x_Bd = x_Bd + b_Bd * self.config.delta_t + sigma_ * dw_BdT[:, :, t]
+            y_Bd = y_Bd - f_ * self.config.delta_t + q_Bd * dw_BdT[:, :, t]
 
-        delta = y_Bd + self.config.hx_tf(self.config.total_T, x_Bd)
-        loss = torch.mean(torch.sum(delta**2, 1, keepdim=True) + LAMBDA * H)
-        ratio = torch.mean(torch.sum(delta**2, 1, keepdim=True)) / torch.mean(H)
+        delta_Bd = y_Bd + self.config.hx_tf(self.config.total_T, x_Bd) 
+        loss = torch.mean(torch.sum(delta_Bd ** 2, 1, keepdim=True) + LAMBDA * H_B1)
+        ratio = torch.mean(torch.sum(delta_Bd ** 2, 1, keepdim=True)) / torch.mean(H_B1)
 
-        l = l + self.config.h_fn(self.config.total_T, x_Bd)
-        cost = torch.mean(l)
+        l_B1 = l_B1 + self.config.h_fn(self.config.total_T, x_Bd)
+        cost = torch.mean(l_B1)
 
         return loss, cost, ratio
 
@@ -414,14 +407,11 @@ class Config(object):
         # sample dW from a normal distribution
         dw_sample = normal.rvs(size=[num_sample, self.dim_x, self.num_time_interval]) * self.sqrth
         dw_sample_tensor = torch.tensor(dw_sample, dtype=torch.float32).to(device)  
-        # print("sampled dW: ", dw_sample_tensor.shape)  
         return dw_sample_tensor # (B, d, num_time_interval)
     
     def sample_jump_times(self, num_sample):
         # sample jump times uniformly in [0, T]
-        nr_jumps = np.random.poisson(self.lambda_jumps * self.total_T, size=num_sample)
-        # print("nr_jumps: ", nr_jumps)  # (B,)
-        # sample jump times uniformly in [0, T]. for each m sample nr_jumps[m] jump times. to keep the size const, the rest of the times are set to T
+        nr_jumps = np.random.poisson(self.lambda_jumps * self.total_T, size=num_sample) # shape is(B,)
         max_jumps = np.max(nr_jumps)
         jump_times = np.zeros((num_sample, self.dim_x, max_jumps))
         jump_times = jump_times.astype(np.float32)
@@ -432,7 +422,7 @@ class Config(object):
             
         # sort the jump times
         jump_times = np.sort(jump_times, axis=2)
-        print("sampled jump times: ", jump_times.shape)  # (B, d, N_j)
+        # print("sampled jump times: ", jump_times.shape)  # (B, d, N_j)
         jump_times_tensor = torch.tensor(jump_times, dtype=torch.float32).to(device)  
         return jump_times_tensor
     
