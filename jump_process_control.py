@@ -137,7 +137,7 @@ class WholeNet(torch.nn.Module):
         y_Bd = torch.matmul(all_one_vec, self.y_init_1d)
         
         l = 0.0  # The cost functional
-        H = 0.0  # The constraint term
+        H = torch.tensor(0.0)  # The constraint term
         J = 0.0  # The jump term
         
         for t in range(0, self.config.num_time_interval):
@@ -145,12 +145,13 @@ class WholeNet(torch.nn.Module):
             u_Bd = self.u_net(data) 
             q_Bd = self.q_net(data) # shouldnt this be of shape (B,d,d,)????
 
-            l_B1 = l + self.config.f_fn(time_stamp[t], x_Bd, u_Bd) * self.config.delta_t # (B, 1)
-            H_B1 = H + self.config.Hu_fn(time_stamp[t], x_Bd, y_Bd, q_Bd, u_Bd) # (B, 1)
+            l = l + self.config.f_fn(time_stamp[t], x_Bd, u_Bd) * self.config.delta_t # (B, 1)
+            H = H + self.config.Hu_fn(time_stamp[t], x_Bd, y_Bd, q_Bd, u_Bd, r = 0) # (B, 1) <<--- change this r
+            # print("H: ", H)  # (B, 1) <<<<--- this is a problem. currently its a scalar. shouldnt it be (B,1)????
             b_Bd = self.config.b_fn(time_stamp[t], x_Bd, u_Bd) # (B, d)
             # print("b_ shape: ", b_.shape)  # (B, d)
             sigma_ = self.config.sigma_fn(time_stamp[t], x_Bd, u_Bd) # float
-            f_ = self.config.Hx_fn(time_stamp[t], x_Bd, u_Bd, y_Bd, q_Bd)
+            f_ = self.config.Hx_fn(time_stamp[t], x_Bd, u_Bd, y_Bd, q_Bd, r = 0)         # <<<---change this
             # print("f_ shape: ", f_.shape)  # (B, d)  ### this might be a problem. currently its a scalar
             
             ### JUMP TERM for x update ###
@@ -160,12 +161,12 @@ class WholeNet(torch.nn.Module):
             x_Bd = x_Bd + b_Bd * self.config.delta_t + sigma_ * dw_BdT[:, :, t]         # change this  <<---
             y_Bd = y_Bd - f_ * self.config.delta_t + q_Bd * dw_BdT[:, :, t]             # change this  <<---
 
-        delta_Bd = y_Bd + self.config.hx_tf(self.config.total_T, x_Bd) 
-        loss = torch.mean(torch.sum(delta_Bd ** 2, 1, keepdim=True) + LAMBDA * H_B1)
-        ratio = torch.mean(torch.sum(delta_Bd ** 2, 1, keepdim=True)) / torch.mean(H_B1)
+        delta_Bd = y_Bd + self.config.g_x_fn(x_Bd)
+        loss = torch.mean(torch.sum(delta_Bd ** 2, 1, keepdim=True) + LAMBDA * H)
+        ratio = torch.mean(torch.sum(delta_Bd ** 2, 1, keepdim=True)) / torch.mean(H)
 
-        l_B1 = l_B1 + self.config.h_fn(self.config.total_T, x_Bd)
-        cost = torch.mean(l_B1)
+        l = l + self.config.g_fn(x_Bd)
+        cost = torch.mean(l)
 
         return loss, cost, ratio
 
@@ -446,28 +447,51 @@ class Config(object):
         return support_points_tensor # (B, d) <---- IS THIS CORRECT? @Rafael
         
     ##### COST FUNCTIONAL AND HAMILTONIAN #####
+    # def f_fn(self, t, x, u):
+    #     return torch.sum(u ** 2, dim=1, keepdim=True)
+
+    # def h_fn(self, t, x):
+    #     return torch.log(0.5*(1 + torch.sum(x**2, dim=1, keepdim=True)))
+
+    # def b_fn(self, t, x, u):
+    #     return 2 * u
+
+    # def sigma_fn(self, t, x, u):
+    #     return np.sqrt(2)
+
+    # def Hx_fn(self, t, x, u, y, z):
+    #     return 0
+
+    # def hx_tf(self, t, x):
+    #     a = 1 + torch.sum(x ** 2, dim=1, keepdim=True)
+    #     return 2 * x / a
+
+    # def Hu_fn(self, t, x, y, z, u):
+    #     a = 2 * y - 2 * u
+    #     return torch.sum(a**2, dim=1, keepdim=True)
     def f_fn(self, t, x, u):
-        return torch.sum(u ** 2, dim=1, keepdim=True)
+        return 0
 
-    def h_fn(self, t, x):
-        return torch.log(0.5*(1 + torch.sum(x**2, dim=1, keepdim=True)))
+    def g_fn(self, x):
+        return - 0.5 * torch.sum((x - 10) ** 2, dim=1, keepdim=True)
 
+    def g_x_fn(self, x):
+        return - (x - 10)
+    
     def b_fn(self, t, x, u):
         return 2 * u
 
     def sigma_fn(self, t, x, u):
         return np.sqrt(2)
+    
+    def eta_fn(self, t, x, u, z):
+        return u * z
 
-    def Hx_fn(self, t, x, u, y, z):
+    def Hx_fn(self, t, x, u, p, q, r):
         return 0
 
-    def hx_tf(self, t, x):
-        a = 1 + torch.sum(x ** 2, dim=1, keepdim=True)
-        return 2 * x / a
-
-    def Hu_fn(self, t, x, y, z, u):
-        a = 2 * y - 2 * u
-        return torch.sum(a**2, dim=1, keepdim=True)
+    def Hu_fn(self, t, x, u, p, q, r):
+        return 0
 
 def main():
     print('Training time 1:')
