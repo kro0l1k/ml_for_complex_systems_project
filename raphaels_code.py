@@ -17,8 +17,8 @@ print(f"Using device: {device}")
 
 class Solver(object):
     def __init__(self,):
-        self.valid_size = 512
-        self.batch_size = 256
+        self.valid_size = 200
+        self.batch_size = 100
         self.num_iterations = 5000
         self.logging_frequency = 200
         self.lr_values = [5e-3, 5e-3, 5e-3]
@@ -110,15 +110,7 @@ class WholeNet(torch.nn.Module):
             for l in range(self.config.dim_L):
                 H_u = H_u + torch.einsum('bc,bcx->bx', jump_mask[i, :, l, :], self.r_nets[l]((t[i], X, jump_sizes[:, l, :, :])))
 
-            cost = cost + self.config.f(t[i], X, u) * self.config.delta_t
             int_H_u = int_H_u + H_u
-
-            # Update X
-            X = X + self.config.b(t, X, u) * self.config.delta_t + \
-                X * torch.einsum('bxw,bw->bx', self.config.sigma(t[i], X, u), delta_W[i, :, :])
-            for l in range(self.config.dim_L):
-                X = X + u * torch.einsum('bc,bcx->bx', jump_mask[i, :, l, :], jump_sizes[:, l, :, :])
-                X = X + self.config.jump_intensity[l] * self.config.jump_size_mean[l] * u * self.config.delta_t
 
             # Update p
             p = p - H_x + torch.einsum('bxw,bw->bx', q, delta_W[i, :, :])
@@ -126,11 +118,19 @@ class WholeNet(torch.nn.Module):
                 p = p + torch.einsum('bc,bcx->bx', jump_mask[i, :, l, :], self.r_nets[l]((t[i], X, jump_sizes[:, l, :, :])))
                 p = p + torch.mean(self.r_nets[l]((t[i], X, MC_sample_points[:, l, :, :])), dim=1)
 
+            # Update X
+            X = self.config.b(t, X, u) * self.config.delta_t + \
+                X * torch.einsum('bxw,bw->bx', self.config.sigma(t[i], X, u), delta_W[i, :, :])
+            for l in range(self.config.dim_L):
+                X = X + u * torch.einsum('bc,bcx->bx', jump_mask[i, :, l, :], jump_sizes[:, l, :, :])
+                X = X + self.config.jump_intensity[l] * self.config.jump_size_mean[l] * u * self.config.delta_t
+
+
         terminal_value_loss = p + self.config.g_x(X)
         loss = torch.mean(torch.sum(terminal_value_loss**2, 1, keepdim=True) + LAMBDA * int_H_u)
         ratio = torch.mean(torch.sum(terminal_value_loss**2, 1, keepdim=True)) / torch.mean(int_H_u)
 
-        cost = torch.mean(cost + self.config.g(X))
+        cost = torch.mean(self.config.g(X))
 
         return loss, cost, ratio
 
@@ -337,7 +337,6 @@ class FNNetR(torch.nn.Module):
         # Reshape x: (batch_size, dim_X) -> (batch_size, jump_counts, dim_X)
         x_ = x.unsqueeze(1).expand(-1, z.shape[1], -1)  
 
-        print(t_.shape, x_.shape, z.shape)
         # Shape of inputs: (batch_size, jump_counts, dim_X * 2 + 1)
         inputs = torch.cat([t_, x_, z], dim=2)
 
@@ -383,7 +382,7 @@ class Config(object):
                                        ], dtype=float)
 
         # The terminal time in years
-        self.terminal_time = 3
+        self.terminal_time = 1
         # Roughly the number of trading days
         self.time_step_count = math.floor(self.terminal_time * 252)  
         self.delta_t = float(self.terminal_time) / self.time_step_count
@@ -434,21 +433,21 @@ class Config(object):
         # Output shape: (batch_size, dim_u)
         return torch.zeros(x.shape[0], self.dim_u, dtype=torch.float32).to(x.device)
 
-    def g(self, x): # - 0.5 * ||x - 10||^2
+    def g(self, x): # - 0.5 * (x - 1.1)^2
         # Output shape: (batch_size, 1)
-        return - 0.5 * torch.sum((x - 10) ** 2, dim=1, keepdim=True)
+        return - 0.5 * torch.sum((x - 1.1) ** 2, dim=1, keepdim=True)
 
     def g_x(self, x):
         # Output shape: (batch_size, dim_X)
-        return - (x - 10)
+        return - (x - 1.1)
     
     def rho(self, t): # Risk-free interest rate
         # Output shape: scalar
-        return 0.05
+        return 1.05
     
     def mu(self, t): # Expected return of the stock
         # Output shape: scalar
-        return 0.1
+        return 1.1
 
     def b(self, t, x, u):
         # Output shape: (batch_size, dim_X)
@@ -518,7 +517,7 @@ class Config(object):
         X = self.X_init.repeat(sample_size, 1)  # Shape: (sample_size, dim_X)
         S[0,:,:] = X.detach().cpu().numpy()  # Initial stock price
         for i in range(self.time_step_count):
-                X = X + self.b(t[i], X, X) * self.delta_t + \
+                X = self.b(t[i], X, X) * self.delta_t + \
                 torch.einsum('bxw,bw->bx', self.sigma(t[i], X, X), sample_data.delta_W[i, :, :]) + \
                 X * torch.einsum('blc,blcx->bx', sample_data.jump_mask[i, :, :, :], sample_data.jump_sizes) + \
                 self.jump_intensity[0] * self.jump_size_mean[0] * X * self.delta_t
