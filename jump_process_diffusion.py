@@ -115,7 +115,7 @@ class WholeNet(torch.nn.Module):
             for l in range(self.config.dim_L):
                 Hu = Hu + self.config.jump_intensity[l] * torch.einsum('bc,bcx->bx', jump_mask_TBLC[i, :, l, :], jump_sizes_BLCX[:, l, :, :] * r_jump_BLCX[:, l, :, :])
 
-            int_Hu = int_Hu + Hu**2
+            int_Hu = int_Hu + Hu**2 # NOTE: this is where the square was missing! 
 
             # Update p
             Hx = torch.einsum('bjn,bj->bn', self.config.b_x(t[i], X_BX, u_BU), p_BX)

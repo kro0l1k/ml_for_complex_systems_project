@@ -115,7 +115,7 @@ class WholeNet(torch.nn.Module):
             for l in range(self.config.dim_L):
                 Hu = Hu + self.config.jump_intensity[l] * torch.einsum('bc,bcx->bx', jump_mask_TBLC[i, :, l, :], jump_sizes_BLCX[:, l, :, :] * r_jump_BLCX[:, l, :, :])
 
-            int_Hu = int_Hu + Hu**2
+            int_Hu = int_Hu + Hu**2 # NOTE: this is where the square was missing.
 
             # Update p
             Hx = torch.einsum('bjn,bj->bn', self.config.b_x(t[i], X_BX, u_BU), p_BX)
@@ -411,7 +411,7 @@ class Config(object):
         for sample in range(sample_size):
             for k in range(self.dim_L):
                 jump_times_BLC[sample, k, jump_counts[sample, k]:] = self.terminal_time + 1.0 # Dummy value
-                # jump_times_BLC[sample, k, :jump_counts[sample, k]] = np.sort(jump_times_BLC[sample, k, :jump_counts[sample, k]])
+                jump_times_BLC[sample, k, :jump_counts[sample, k]] = np.sort(jump_times_BLC[sample, k, :jump_counts[sample, k]]) # we need to sort the jump times
 
         # Create a mask which indicates whether each jump time is in the interval [i * delta_t, (i + 1) * delta_t)
         jump_mask_TBLC = np.zeros((self.time_step_count, sample_size, self.dim_L, np.max(jump_counts)), dtype=int)

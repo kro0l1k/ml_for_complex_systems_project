@@ -178,6 +178,7 @@ class Config(object):
         self.dim_y = 10
         self.dim_z = 10
         self.dim_u = 10
+        
         self.num_time_interval = 25
         self.total_T = 1.0
         self.delta_t = (self.total_T + 0.0) / self.num_time_interval
