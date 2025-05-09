@@ -372,10 +372,10 @@ class Config(object):
     """Define the configs in the systems"""
     def __init__(self):
         super(Config, self).__init__()
-        self.dim_X = 2              # The integer n
+        self.dim_X = 20              # The integer n
         self.dim_u = 2              # The dimension of U
         self.dim_W = 2              # The integer m
-        self.dim_L = 1              # The integer l
+        self.dim_L = 3              # The integer l
 
         self.X_init = torch.ones(self.dim_X, dtype=torch.float32, device=device) # The initial value of X at time 0
         
@@ -389,7 +389,7 @@ class Config(object):
         # The terminal time in years
         self.terminal_time = 1
         # Roughly the number of trading days
-        self.time_step_count = math.floor(self.terminal_time * 20)  # 20 trading days in a month. keep it small for testing.
+        self.time_step_count = math.floor(self.terminal_time * 200)  # 20 trading days in a month. keep it small for testing.
         self.delta_t = float(self.terminal_time) / self.time_step_count
 
         self.MC_sample_size = 10  # The integer M

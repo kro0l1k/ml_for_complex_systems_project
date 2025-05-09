@@ -372,10 +372,10 @@ class Config(object):
     """Define the configs in the systems"""
     def __init__(self):
         super(Config, self).__init__()
-        self.dim_X = 2              # The integer n
-        self.dim_u = 2              # The dimension of U
-        self.dim_W = 2              # The integer m
-        self.dim_L = 1              # The integer l
+        self.dim_X = 20              # The integer n
+        self.dim_u = 20              # The dimension of U
+        self.dim_W = 20              # The integer m
+        self.dim_L = 1             # The integer l # NOTE: the code only works when this is 1. What does it mean when L > 1? 
 
         self.X_init = torch.ones(self.dim_X, dtype=torch.float32, device=device) # The initial value of X at time 0
         
@@ -389,7 +389,7 @@ class Config(object):
         # The terminal time in years
         self.terminal_time = 1
         # Roughly the number of trading days
-        self.time_step_count = math.floor(self.terminal_time * 20)  # 20 trading days in a month. keep it small for testing.
+        self.time_step_count = math.floor(self.terminal_time * 200)  # 20 trading days in a month. keep it small for testing.
         self.delta_t = float(self.terminal_time) / self.time_step_count
 
         self.MC_sample_size = 10  # The integer M
@@ -411,7 +411,7 @@ class Config(object):
         for sample in range(sample_size):
             for k in range(self.dim_L):
                 jump_times_BLC[sample, k, jump_counts[sample, k]:] = self.terminal_time + 1.0 # Dummy value
-                jump_times_BLC[sample, k, :jump_counts[sample, k]] = np.sort(jump_times_BLC[sample, k, :jump_counts[sample, k]]) # we need to sort the jump times
+                jump_times_BLC[sample, k, :jump_counts[sample, k]] = np.sort(jump_times_BLC[sample, k, :jump_counts[sample, k]]) # we need to sort the jump times # NOTE: or do we? 
 
         # Create a mask which indicates whether each jump time is in the interval [i * delta_t, (i + 1) * delta_t)
         jump_mask_TBLC = np.zeros((self.time_step_count, sample_size, self.dim_L, np.max(jump_counts)), dtype=int)
@@ -420,9 +420,12 @@ class Config(object):
 
         # Sample the jump sizes as normal distributions with predefined means and stds
         jump_sizes_BLCX = np.zeros((sample_size, self.dim_L, np.max(jump_counts), self.dim_X), dtype=float)
-        for l in range(self.dim_L):
-           jump_sizes_BLCX[:, l, :, :] = np.random.normal(loc=self.jump_size_mean[l], scale=self.jump_size_std[l], size=(sample_size, np.max(jump_counts), self.dim_X))
+        
+        # NOTE: commenting this out means there will be no jumps
+        # for l in range(self.dim_L):
+        #    jump_sizes_BLCX[:, l, :, :] = np.random.normal(loc=self.jump_size_mean[l], scale=self.jump_size_std[l], size=(sample_size, np.max(jump_counts), self.dim_X))
             
+        
 
         return SampleData(delta_W_TBW   = torch.tensor(delta_W_TBW,    dtype=torch.float32).to(device),
                           jump_times_BLC = torch.tensor(jump_times_BLC, dtype=torch.float32).to(device),
@@ -516,6 +519,12 @@ class Config(object):
     def sample_stock_price(self, sample_size):
         # Generate dS_t = S_t * (mu(t) * dt + sigma(t) * dW_t + \int_{\R} eta(t,z) * N(dt, dz))
         sample_data = self.sample(sample_size)
+        
+        print('Sample data shapes:')
+        print('delta_W_TBW: ', sample_data.delta_W_TBW.shape)
+        print('jump_times_BLC: ', sample_data.jump_times_BLC.shape)
+        print('jump_mask_TBLC: ', sample_data.jump_mask_TBLC.shape)
+        print('jump_sizes_BLCX: ', sample_data.jump_sizes_BLCX.shape)
         t = torch.linspace(0, self.terminal_time, self.time_step_count + 1, dtype=torch.float32, device=device)
 
         # Initialize S_t, which will be used to record the stock price at each time step
