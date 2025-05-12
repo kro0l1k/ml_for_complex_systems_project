@@ -375,7 +375,11 @@ class Config(object):
         self.dim_X = 20              # The integer n
         self.dim_u = 2              # The dimension of U
         self.dim_W = 2              # The integer m
-        self.dim_L = 3              # The integer l
+        self.dim_L = 1              # The integer l
+        
+        # make sure L is one, if not throw a warning
+        if self.dim_L != 1:
+            print('Warning: The dimension of L is not 1, which may cause problems in the code.')
 
         self.X_init = torch.ones(self.dim_X, dtype=torch.float32, device=device) # The initial value of X at time 0
         

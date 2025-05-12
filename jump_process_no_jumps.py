@@ -377,6 +377,11 @@ class Config(object):
         self.dim_W = 20              # The integer m
         self.dim_L = 1             # The integer l # NOTE: the code only works when this is 1. What does it mean when L > 1? 
 
+        if self.dim_L != 1:
+            print('Warning: The dimension of L is not 1, which may cause problems in the code.')
+
+        
+        
         self.X_init = torch.ones(self.dim_X, dtype=torch.float32, device=device) # The initial value of X at time 0
         
         self.jump_intensity = np.array([5,  # In average, 5 jumps per year
