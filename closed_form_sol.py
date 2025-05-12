@@ -27,20 +27,15 @@ class ClosedFormSolver(object):
         
     def get_solution(self):
         """
-        should implement the cloed formula from 4.1
-        
-        
+        should implement the cloed formula from 4.1    
         """
         start_time = time.time()
         training_history = []
         validation_data = self.config.sample(self.valid_size)
         
         # compute Lambda(t) = sigma(t)**2 + mean_jump ** 2 + std_jump ** 2
-        Lambda = self.config.sigma_stock(0)**2 + self.config.jump_size_mean[0] ** 2 + self.config.jump_size_std[0] ** 2 
-        print(" to compute the term Lambda(t) we are using: ", Lambda, self.config.sigma_stock(0)**2 , 
-              self.config.jump_size_mean[0] ** 2 ,  self.config.jump_size_std[0] ** 2)
-        
-        # compute the integrands: 
+        Lambda = self.config.sigma_stock(0)**2 + self.config.jump_intensity * ( self.config.jump_size_mean[0] ** 2 + self.config.jump_size_std[0] ** 2  ) # NOTE: ask raphael!
+        Lambda = torch.tensor(Lambda, dtype=torch.float32, device=device)
         I_phi = self.config.mu(0) - self.config.rho(0) **2 / Lambda - 2 * self.config.rho(0) 
         I_psi = self.config.mu(0) - self.config.rho(0) **2 / Lambda -  self.config.rho(0) 
         
@@ -49,28 +44,18 @@ class ClosedFormSolver(object):
         I_psi_tensor = torch.tensor(I_psi, dtype=torch.float32, device=device)
         terminal_time_tensor = torch.tensor(self.config.terminal_time, dtype=torch.float32, device=device)
         
-        print(" self.config.rho(0) ", self.config.rho(0) )
-        print("I_phi: ", I_phi)
-        print("I_psi: ", I_psi)
 
-        
         def phi(t): 
-            # Ensure t is a tensor
-            if not isinstance(t, torch.Tensor):
-                t = torch.tensor(t, dtype=torch.float32, device=device)
             return -1.0 * torch.exp(I_phi_tensor * (terminal_time_tensor - t))
         
         def psi(t):
-            # Ensure t is a tensor
-            if not isinstance(t, torch.Tensor):
-                t = torch.tensor(t, dtype=torch.float32, device=device)
             a = self.config.a_in_const_functional()
             return a * torch.exp(I_psi_tensor * (terminal_time_tensor - t))
         
-        print("phi(0): ", phi(0))
-        print("psi(0): ", psi(0))
-        print("phi(1): ", phi(1))
-        print("psi(1): ", psi(1))
+        print(" ratio of the greeks at time ", 0.2 , "  phi(t) / psi(t), :", phi(0.2) / psi(0.2))
+        print(" ratio of the greeks at time ", 0.4 , "  phi(t) / psi(t), :", phi(0.4) / psi(0.4))
+        print(" ratio of the greeks at time ", 0.7 , "  phi(t) / psi(t), :", phi(0.7) / psi(0.7))
+        print(" ratio of the greeks at time ", 0.9 , "  phi(t) / psi(t), :", phi(0.9) / psi(0.9))
         
         def u_star(t_1, X_BX):
             # t is a scalar, 
@@ -85,10 +70,38 @@ class ClosedFormSolver(object):
             ustar = (self.config.rho(0) - self.config.mu(0)) * (phi(t_1) * X_BX + psi(t_1)) / (phi(t_1) * Lambda)
             return ustar
         
-        print("u_star(0): ", u_star(0, torch.ones(self.batch_size, self.config.dim_X).to(device))[:5] )
-        print("u_star(1): ", u_star(1, torch.ones(self.batch_size, self.config.dim_X).to(device))[:5] )
-        print("u_star(0.5): ", u_star(0.5, torch.ones(self.batch_size, self.config.dim_X).to(device))[:5] )
-        print("u_star(0): ", u_star(0, torch.ones(self.batch_size, self.config.dim_X).to(device))[:5])
+        def inspect_the_feedback_law():
+            # Inspect the feedback law u_star(t, X_BX)
+            # Define time steps and x values to inspect
+            time_steps = [0, 0.25, 0.5, 0.75, 1]
+            x_values = [0.5, 1.0, 1.25, 1.4,  1.5, 1.6, 1.75, 2.0, 2.5]
+
+            # Prepare data for plotting
+            u_star_values = []
+            for t in time_steps:
+                u_star_at_t = []
+                for x in x_values:
+                    X_BX = torch.full((1, self.config.dim_X), x, dtype=torch.float32, device=device)
+                    
+                    # print(" ustar shape: ", u_star(t, X_BX).shape)
+                    u_star_at_t.append(u_star(t, X_BX).detach().cpu().numpy()[0,0])
+                    u_star_values.append(u_star_at_t)
+
+            # Plot the feedback law
+            fig, axes = plt.subplots(1, 5, figsize=(20, 4), sharey=True)
+            for i, ax in enumerate(axes):
+                ax.plot(x_values, u_star_values[i])
+                ax.set_title(f"u_star at t = {time_steps[i]}")
+                ax.set_xlabel("x values")
+                ax.set_ylabel("u_star values")
+                ax.grid()
+
+            plt.tight_layout()
+            plt.show()
+            
+        inspect_the_feedback_law()
+        
+        
         # get the tensor X_0 and do the forward pass with feeback control u_star
         X_BX = torch.ones(self.batch_size, self.config.dim_X).to(device)
         t = torch.linspace(0, self.config.terminal_time, self.config.time_step_count + 1, dtype=torch.float32, device=device)
@@ -104,11 +117,11 @@ class ClosedFormSolver(object):
                 X_BX = X_BX + self.config.b(t[i], X_BX, u_star(t[i], X_BX)) * self.config.delta_t + \
                 torch.einsum('bxw,bw->bx', self.config.sigma(t[i], X_BX, u_star(t[i], X_BX)), delta_W[i, :, :]) + \
                 X_BX * torch.einsum('blc,blcx->bx', jump_mask[i, :, :, :], jump_sizes) + \
-                - self.config.jump_intensity[0] * self.config.jump_size_mean[0] * X_BX * self.config.delta_t
+                - self.config.jump_intensity[0] * self.config.jump_size_mean[0] * X_BX * self.config.delta_t # NOTE: why with a minus sign?
                 
                 S[i+1,:,:] = X_BX.detach().cpu().numpy()
         
-        # Plot the stock price
+        # Plot the wealth plot
         t = t.detach().cpu().numpy()
         for b in range(self.batch_size):
             plt.plot(t, S[:, b, 0])
@@ -117,6 +130,27 @@ class ClosedFormSolver(object):
         plt.ylabel('$S_1(t)$')
         plt.grid()
         plt.show()
+        
+        # get the final value of the portfolio
+        S_T = S[-1, :, :]
+        
+        # compute the mean and the variance of the portfolio
+        mean_portfolio = np.mean(S_T, axis=0)
+        var_portfolio = np.var(S_T, axis=0)
+        
+        # compute E[ (X_T - a)^2 ]
+        # E[ (X_T - a)^2 ] = E[ X_T^2 ] - 2 * a * E[ X_T ] + a^2
+        # E[ X_T^2 ] = E[ S_T^2 ]
+        # E[ X_T ] = E[ S_T ]
+        a = self.config.a_in_const_functional()
+        E_X_T_square = np.mean(S_T ** 2, axis=0)
+        E_X_T = np.mean(S_T, axis=0)
+        cost_function = E_X_T_square - 2 * a * E_X_T + a ** 2
+        print("Cost function: ", cost_function)
+        print("Mean of the portfolio: ", mean_portfolio)
+        print("Variance of the portfolio: ", var_portfolio)
+        print("Time taken: ", time.time() - start_time)
+        return S, mean_portfolio, var_portfolio
         
         
         
@@ -131,12 +165,12 @@ SampleData = namedtuple('SampleData', [
 ])
 
 class Config(object):
-    """Define the configs in the systems"""
+    """Define the configs of the problem"""
     def __init__(self):
         super(Config, self).__init__()
-        self.dim_X = 2              # The integer n
-        self.dim_u = 2              # The dimension of U
-        self.dim_W = 2              # The integer m
+        self.dim_X = 1              # The integer n
+        self.dim_u = 1              # The dimension of U
+        self.dim_W = 1              # 
         self.dim_L = 1              # The integer l 
         
         if self.dim_L > 1:
@@ -197,7 +231,7 @@ class Config(object):
     def a_in_const_functional(self):
         # the constant a in the equivalent problem formulation: sup E [x(T - a)**2]
         # output shape: scalar
-        return 1. #TODO: check if changing this changes anything.
+        return 1.3 #TODO: check if changing this changes anything.
 
     def f(self, t, x, u):
         # Output shape: (batch_size, 1)
@@ -225,7 +259,7 @@ class Config(object):
     
     def mu(self, t): # Expected return of the stock
         # Output shape: scalar
-        return 0.1
+        return 0.3
     
     def sigma_stock(self, t): # Volatility of the stock
         # Output shape: scalar
@@ -299,6 +333,7 @@ class Config(object):
         # Create a copy of X_init
         X = self.X_init.repeat(sample_size, 1)  # Shape: (sample_size, dim_X)
         S[0,:,:] = X.detach().cpu().numpy()  # Initial stock price
+        
         for i in range(self.time_step_count):
                 X = X + self.b(t[i], X, X) * self.delta_t + \
                 torch.einsum('bxw,bw->bx', self.sigma(t[i], X, X), sample_data.delta_W_TBW[i, :, :]) + \
@@ -308,15 +343,15 @@ class Config(object):
                 
                 S[i+1,:,:] = X.detach().cpu().numpy()
             
-        # Plot the stock price
-        t = t.detach().cpu().numpy()
-        for b in range(sample_size):
-            plt.plot(t, S[:, b, 0])
-        plt.title('Stock Price Simulation')
-        plt.xlabel('t')
-        plt.ylabel('$S_1(t)$')
-        plt.grid()
-        plt.show()
+        # # Plot the stock price
+        # t = t.detach().cpu().numpy()
+        # for b in range(sample_size):
+        #     plt.plot(t, S[:, b, 0])
+        # plt.title('Stock Price Simulation')
+        # plt.xlabel('t')
+        # plt.ylabel('$S_1(t)$')
+        # plt.grid()
+        # plt.show()
         return S
 
 def main():
