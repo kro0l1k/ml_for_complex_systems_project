@@ -1,4 +1,4 @@
-# todo: implementation of the closed form solution for one dimensional jump-diffusion.
+# todo: implement a PPO agent to learn how to trade the risky asset. 
 import time
 import numpy as np
 import torch
@@ -16,14 +16,14 @@ torch.set_default_dtype(torch.float32)
 device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
 print(f"Using device: {device}")
 
-class ClosedFormSolver(object):
+class PPO_Agent(object):
     def __init__(self,):
+        self.valid_size = 200
         self.batch_size = 100
-        self.valid_size = 1000
         self.config = Config()
 
         
-    def get_solution(self):
+    def train_PPO(self):
         """
         should implement the cloed formula from 4.1    
         """
@@ -72,7 +72,7 @@ class ClosedFormSolver(object):
             # Inspect the feedback law u_star(t, X_BX)
             # Define time steps and x values to inspect
             time_steps = [0, 0.25, 0.5, 0.75, 1]
-            x_values = [-0.5, 0, 0.25, 0.5, 1.0, 1.25, 1.4,  1.5, 1.6, 1.75, 2.0, 2.5,5,10]
+            x_values = [0.5, 1.0, 1.25, 1.4,  1.5, 1.6, 1.75, 2.0, 2.5]
 
             # Prepare data for plotting
             u_star_values = []
@@ -166,9 +166,9 @@ class Config(object):
     """Define the configs of the problem"""
     def __init__(self):
         super(Config, self).__init__()
-        self.dim_X = 20              # The integer n
-        self.dim_u = 20              # The dimension of U
-        self.dim_W = 20              # The integer m
+        self.dim_X = 1              # The integer n
+        self.dim_u = 1              # The dimension of U
+        self.dim_W = 1              # 
         self.dim_L = 1              # The integer l 
         
         if self.dim_L > 1:
@@ -229,7 +229,7 @@ class Config(object):
     def a_in_const_functional(self):
         # the constant a in the equivalent problem formulation: sup E [x(T - a)**2]
         # output shape: scalar
-        return 1.05 #TODO: check if changing this changes anything.
+        return 1.3 #TODO: check if changing this changes anything.
 
     def f(self, t, x, u):
         # Output shape: (batch_size, 1)
