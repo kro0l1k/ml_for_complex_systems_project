@@ -32,23 +32,25 @@ class ClosedFormSolver(object):
         validation_data = self.config.sample(self.valid_size)
         
         # compute Lambda(t) = sigma(t)**2 + mean_jump ** 2 + std_jump ** 2
-        Lambda = self.config.sigma_stock(0)**2 + self.config.jump_intensity * ( self.config.jump_size_mean[0] ** 2 + self.config.jump_size_std[0] ** 2  ) # NOTE: ask raphael!
-        Lambda = torch.tensor(Lambda, dtype=torch.float32, device=device)
-        I_phi = self.config.mu(0) - self.config.rho(0) **2 / Lambda - 2 * self.config.rho(0) 
-        I_psi = self.config.mu(0) - self.config.rho(0) **2 / Lambda -  self.config.rho(0) 
+        def Lambda(t):
+            return torch.tensor(self.config.sigma(t)**2 + self.config.jump_intensity * self.config.jump_size_std[0] ** 2, 
+                                dtype=torch.float32, device=device)
         
-        # Convert to PyTorch tensors
-        I_phi_tensor = torch.tensor(I_phi, dtype=torch.float32, device=device)
-        I_psi_tensor = torch.tensor(I_psi, dtype=torch.float32, device=device)
         terminal_time_tensor = torch.tensor(self.config.terminal_time, dtype=torch.float32, device=device)
-        
 
         def phi(t): 
-            return -1.0 * torch.exp(I_phi_tensor * (terminal_time_tensor - t))
+            # Previous: self.config.mu(t) - self.config.rho(t) **2
+            # Correction: (self.config.mu(t) - self.config.rho(t)) **2
+            I_phi = (self.config.mu(t) - self.config.rho(t)) **2 / Lambda(t) - 2 * self.config.rho(t) 
+            I_phi = torch.tensor(I_phi, dtype=torch.float32, device=device)
+            return -1.0 * torch.exp(I_phi * (terminal_time_tensor - t))
         
         def psi(t):
-            a = self.config.a_in_const_functional()
-            return a * torch.exp(I_psi_tensor * (terminal_time_tensor - t))
+            # Previous: self.config.mu(t) - self.config.rho(t) **2
+            # Correction: (self.config.mu(t) - self.config.rho(t)) **2
+            I_psi = (self.config.mu(t) - self.config.rho(t)) **2 / Lambda(t) -  self.config.rho(t) 
+            I_psi = torch.tensor(I_psi, dtype=torch.float32, device=device)
+            return self.config.a_in_cost() * torch.exp(I_psi * (self.config.terminal_time - t))
         
         print(" ratio of the greeks at time ", 0.2 , "  phi(t) / psi(t), :", phi(0.2) / psi(0.2))
         print(" ratio of the greeks at time ", 0.4 , "  phi(t) / psi(t), :", phi(0.4) / psi(0.4))
@@ -65,7 +67,7 @@ class ClosedFormSolver(object):
             # Make sure X_BX is on the same device
             X_BX = X_BX.to(device)
             
-            ustar = (self.config.rho(0) - self.config.mu(0)) * (phi(t_1) * X_BX + psi(t_1)) / (phi(t_1) * Lambda)
+            ustar = (self.config.rho(0) - self.config.mu(0)) * (phi(t_1) * X_BX + psi(t_1)) / (phi(t_1) * Lambda(0))
             return ustar
         
         def inspect_the_feedback_law():
@@ -112,10 +114,10 @@ class ClosedFormSolver(object):
         jump_sizes = validation_data.jump_sizes_BLCX[:self.batch_size, :, :, :]
         
         for i in range(self.config.time_step_count):
-                X_BX = X_BX + self.config.b(t[i], X_BX, u_star(t[i], X_BX)) * self.config.delta_t + \
-                torch.einsum('bxw,bw->bx', self.config.sigma(t[i], X_BX, u_star(t[i], X_BX)), delta_W[i, :, :]) + \
+                X_BX = X_BX + self.config.drift(t[i], X_BX, u_star(t[i], X_BX)) * self.config.delta_t + \
+                torch.einsum('bxw,bw->bx', self.config.diffusion(t[i], X_BX, u_star(t[i], X_BX)), delta_W[i, :, :]) + \
                 X_BX * torch.einsum('blc,blcx->bx', jump_mask[i, :, :, :], jump_sizes) + \
-                - self.config.jump_intensity[0] * self.config.jump_size_mean[0] * X_BX * self.config.delta_t # NOTE: why with a minus sign?
+                - self.config.jump_intensity[0] * self.config.jump_size_mean[0] * X_BX * self.config.delta_t # NOTE: why with a minus sign? # REPLY: because this compensation term is intended to cancel out the jumps "on average" (over time and probability space)
                 
                 S[i+1,:,:] = X_BX.detach().cpu().numpy()
         
@@ -123,7 +125,7 @@ class ClosedFormSolver(object):
         t = t.detach().cpu().numpy()
         for b in range(self.batch_size):
             plt.plot(t, S[:, b, 0])
-        plt.title('Stock Price Simulation')
+        plt.title('Wealth Simulation')
         plt.xlabel('t')
         plt.ylabel('$S_1(t)$')
         plt.grid()
@@ -140,7 +142,7 @@ class ClosedFormSolver(object):
         # E[ (X_T - a)^2 ] = E[ X_T^2 ] - 2 * a * E[ X_T ] + a^2
         # E[ X_T^2 ] = E[ S_T^2 ]
         # E[ X_T ] = E[ S_T ]
-        a = self.config.a_in_const_functional()
+        a = self.config.a_in_cost()
         E_X_T_square = np.mean(S_T ** 2, axis=0)
         E_X_T = np.mean(S_T, axis=0)
         cost_function = E_X_T_square - 2 * a * E_X_T + a ** 2
@@ -163,35 +165,38 @@ SampleData = namedtuple('SampleData', [
 ])
 
 class Config(object):
-    """Define the configs of the problem"""
+    """Define the configs in the systems"""
     def __init__(self):
         super(Config, self).__init__()
-        self.dim_X = 20              # The integer n
-        self.dim_u = 20              # The dimension of U
-        self.dim_W = 20              # The integer m
+        self.dim_X = 1              # The integer n
+        self.dim_u = 1              # The dimension of U
+        self.dim_W = 1              # The integer m
         self.dim_L = 1              # The integer l 
         
-        if self.dim_L > 1:
-            print('Warning: dim_L > 1, which is not supported yet. Please set dim_L = 1.')
+        # make sure L is one, if not throw a warning
+        if self.dim_L != 1:
+            print('Warning: The dimension of L is not 1, which may cause problems in the code.')
 
         self.X_init = torch.ones(self.dim_X, dtype=torch.float32, device=device) # The initial value of X at time 0
         
-        self.jump_intensity = np.array([5,  # In average, 5 jumps per year
+        self.jump_intensity = np.array([1,  # Jumps per year in average, 
                                         ], dtype=float) # The l-dimensional vector lambda
-        self.jump_size_mean = np.array([-0.02,
+        self.log_normal_mu = np.array([-0.05,
                                         ], dtype=float)
-        self.jump_size_std = np.array([0.05,
+        self.log_normal_sigma = np.array([0.1,
                                        ], dtype=float)
+        self.jump_size_mean = np.exp(self.log_normal_mu + 0.5 * self.log_normal_sigma ** 2) - 1
+        self.jump_size_std = np.sqrt((np.exp(self.log_normal_sigma ** 2) - 1) * np.exp(2 * self.log_normal_mu + self.log_normal_sigma ** 2))
 
         # The terminal time in years
-        self.terminal_time = 1
+        self.terminal_time = 1.0
         # Roughly the number of trading days
         self.time_step_count = math.floor(self.terminal_time * 200)  # 20 trading days in a month. keep it small for testing.
         self.delta_t = float(self.terminal_time) / self.time_step_count
 
-        self.MC_sample_size = 1000  # The integer M
+        self.MC_sample_size = 10  # The integer M
         # Generate sample points for integration with respect to nu 
-        MC_sample_points_LMX = np.random.normal(loc=-0.02, scale=0.05, size=(self.dim_L, self.MC_sample_size, self.dim_X))
+        MC_sample_points_LMX = np.random.lognormal(mean=self.log_normal_mu[0], sigma=self.log_normal_sigma[0], size=(self.dim_L, self.MC_sample_size, self.dim_X)) - 1
         self.MC_sample_points_LMX = torch.tensor(MC_sample_points_LMX, dtype=torch.float32).to(device)
 
     def sample(self, sample_size : int):
@@ -218,7 +223,7 @@ class Config(object):
         # Sample the jump sizes as normal distributions with predefined means and stds
         jump_sizes_BLCX = np.zeros((sample_size, self.dim_L, np.max(jump_counts), self.dim_X), dtype=float)
         for l in range(self.dim_L):
-           jump_sizes_BLCX[:, l, :, :] = np.random.normal(loc=self.jump_size_mean[l], scale=self.jump_size_std[l], size=(sample_size, np.max(jump_counts), self.dim_X))
+           jump_sizes_BLCX[:, l, :, :] = np.random.lognormal(mean=self.log_normal_mu[l], sigma=self.log_normal_sigma[l], size=(sample_size, np.max(jump_counts), self.dim_X)) - 1
             
 
         return SampleData(delta_W_TBW   = torch.tensor(delta_W_TBW,    dtype=torch.float32).to(device),
@@ -226,10 +231,10 @@ class Config(object):
                           jump_mask_TBLC  = torch.tensor(jump_mask_TBLC,  dtype=torch.float32).to(device),
                           jump_sizes_BLCX = torch.tensor(jump_sizes_BLCX, dtype=torch.float32).to(device),)
         
-    def a_in_const_functional(self):
+    def a_in_cost(self):
         # the constant a in the equivalent problem formulation: sup E [x(T - a)**2]
         # output shape: scalar
-        return 1.05 #TODO: check if changing this changes anything.
+        return 1.1
 
     def f(self, t, x, u):
         # Output shape: (batch_size, 1)
@@ -245,11 +250,11 @@ class Config(object):
 
     def g(self, x): # - 0.5 * (x - 1.1)^2
         # Output shape: (batch_size, 1)
-        return - 0.5 * torch.sum((x - 1.1) ** 2, dim=1, keepdim=True)
+        return - 0.5 * torch.sum((x - self.a_in_cost()) ** 2, dim=1, keepdim=True)
 
     def g_x(self, x):
         # Output shape: (batch_size, dim_X)
-        return - x + 1.1
+        return - x + self.a_in_cost()
     
     def rho(self, t): # Risk-free interest rate
         # Output shape: scalar
@@ -257,49 +262,50 @@ class Config(object):
     
     def mu(self, t): # Expected return of the stock
         # Output shape: scalar
-        return 0.3
+        return 0.1
     
-    def sigma_stock(self, t): # Volatility of the stock
+    def sigma(self, t): # Volatility of the stock
         # Output shape: scalar
         return 0.2
 
-    def b(self, t, x, u):
+    def drift(self, t, x, u):
         # Output shape: (batch_size, dim_X)
         # b(t, x, u) = rho(t) * x + (mu(t) - rho(t)) * u
         return self.rho(t) * x + (self.mu(t) - self.rho(t)) * u
     
-    def b_x(self, t, x, u): 
-        # Partial derivatives of each component of b with respect to x
+    def drift_x(self, t, x, u): 
+        # Drift coefficient in front of dt
+        # Partial derivatives of each component of drift coefficient with respect to x
         # Output shape: (batch_size, dim_X, dim_X)
-        # b_x(t, x, u)[b, j, :] = \partial b^j(t, x, u) / \partial x
+        # drift_x(t, x, u)[b, j, :] = \partial drift^j(t, x, u) / \partial x
         return self.rho(t) * torch.ones(x.shape[0], self.dim_X, self.dim_X, dtype=torch.float32).to(x.device)
     
-    def b_u(self, t, x, u):
-        # Partial derivatives of each component of b with respect to u
+    def drift_u(self, t, x, u):
+        # Partial derivatives of each component of drift coefficient with respect to u
         # Output shape: (batch_size, dim_X, dim_u)
-        # b_u(t, x, u)[b, j, :] = \partial b^j(t, x, u) / \partial u
+        # drift_u(t, x, u)[b, j, :] = \partial drift^j(t, x, u) / \partial u
         return (self.mu(t) - self.rho(t)) * torch.ones(x.shape[0], self.dim_X, self.dim_u, dtype=torch.float32).to(x.device)
-    
 
-    def sigma(self, t, x, u): # NOTE: should this not be named "drift term or sth like that? "
+    def diffusion(self, t, x, u):
+        # Diffusion coefficient in front of dW_t
         # Input shape of u: (batch_size, dim_X)
         # Output shape: (batch_size, dim_X, dim_W)
-        # sigma(t) = 0.2 * u
-        return 0.2 * u.unsqueeze(2).repeat(1, 1, self.dim_W)
+        # diffusion(t) = 0.2 * u
+        return self.sigma(t) * u.unsqueeze(2).repeat(1, 1, self.dim_W)
     
-    def sigma_x(self, t, x, u): 
-        # Partial derivatives of each component of sigma with respect to x
+    def diffusion_x(self, t, x, u): 
+        # Partial derivatives of each component of diffusion coefficient with respect to x
         # Input shape of u: (batch_size, dim_X)
         # Output shape: (batch_size, dim_X, dim_W, dim_X)
-        # sigma_x(t, x, u)[b, j, k, :] = \partial sigma^{j,k}(t, x, u) / \partial x
+        # diffusion_x(t, x, u)[b, j, k, :] = \partial diffusion^{j,k}(t, x, u) / \partial x
         return torch.zeros(x.shape[0], self.dim_X, self.dim_W, self.dim_X, dtype=torch.float32).to(x.device)
     
-    def sigma_u(self, t, x, u):
-        # Partial derivatives of each component of sigma with respect to u
+    def diffusion_u(self, t, x, u):
+        # Partial derivatives of each component of diffusion coefficient with respect to u
         # Input shape of u: (batch_size, dim_X)
         # Output shape: (batch_size, dim_X, dim_W, dim_u)
-        # sigma_u(t, x, u)[b, j, k, :] = \partial sigma^{j,k}(t, x, u) / \partial u
-        return 0.2 * torch.ones(x.shape[0], self.dim_X, self.dim_W, self.dim_u, dtype=torch.float32).to(x.device)
+        # diffusion_u(t, x, u)[b, j, k, :] = \partial diffusion^{j,k}(t, x, u) / \partial u
+        return self.sigma(t) * torch.ones(x.shape[0], self.dim_X, self.dim_W, self.dim_u, dtype=torch.float32).to(x.device)
     
     def eta(self, t, x, u, z):
         # Shape of u: (batch_size, dim_X)
@@ -331,32 +337,28 @@ class Config(object):
         # Create a copy of X_init
         X = self.X_init.repeat(sample_size, 1)  # Shape: (sample_size, dim_X)
         S[0,:,:] = X.detach().cpu().numpy()  # Initial stock price
-        
+
         for i in range(self.time_step_count):
-                X = X + self.b(t[i], X, X) * self.delta_t + \
-                torch.einsum('bxw,bw->bx', self.sigma(t[i], X, X), sample_data.delta_W_TBW[i, :, :]) + \
+                X = X + self.drift(t[i], X, X) * self.delta_t + \
+                torch.einsum('bxw,bw->bx', self.diffusion(t[i], X, X), sample_data.delta_W_TBW[i, :, :]) + \
                 X * torch.einsum('blc,blcx->bx', sample_data.jump_mask_TBLC[i, :, :, :], sample_data.jump_sizes_BLCX) + \
                 - self.jump_intensity[0] * self.jump_size_mean[0] * X * self.delta_t
                 # S_t[i, :] * sample_data.jump_mask_TBLC[i, 0, :, :] * sample_data.jump_sizes_BLCX[0, :, :, :] * sample_data.jump_mask_TBLC[i, 0, :, :].unsqueeze(2)
                 
                 S[i+1,:,:] = X.detach().cpu().numpy()
             
-        # # Plot the stock price
-        # t = t.detach().cpu().numpy()
-        # for b in range(sample_size):
-        #     plt.plot(t, S[:, b, 0])
-        # plt.title('Stock Price Simulation')
-        # plt.xlabel('t')
-        # plt.ylabel('$S_1(t)$')
-        # plt.grid()
-        # plt.show()
+        # Plot the stock price
+        t = t.detach().cpu().numpy()
+        for b in range(sample_size):
+            plt.plot(t, S[:, b, 0])
+        plt.title('Stock Price Simulation')
+        plt.xlabel('t')
+        plt.ylabel('$S_1(t)$')
+        plt.grid()
+        plt.show()
         return S
 
 def main():
-    config = Config()
-    config.sample_stock_price(sample_size=100)
-    print('sample data generated!')
-    
     solver = ClosedFormSolver()
     
     print('solving the closed form solution')
