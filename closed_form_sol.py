@@ -17,15 +17,15 @@ device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.ba
 print(f"Using device: {device}")
 
 class ClosedFormSolver(object):
-    def __init__(self,):
+    def __init__(self, x_0_value=1.0):
         self.batch_size = 100
         self.valid_size = 1000
         self.config = Config()
+        self.x_0_value = x_0_value
 
-        
     def get_solution(self):
         """
-        should implement the cloed formula from 4.1    
+        should implement the cloed formula from 4.1
         """
         start_time = time.time()
         training_history = []
@@ -52,10 +52,11 @@ class ClosedFormSolver(object):
             I_psi = torch.tensor(I_psi, dtype=torch.float32, device=device)
             return self.config.a_in_cost() * torch.exp(I_psi * (self.config.terminal_time - t))
         
-        print(" ratio of the greeks at time ", 0.2 , "  phi(t) / psi(t), :", phi(0.2) / psi(0.2))
-        print(" ratio of the greeks at time ", 0.4 , "  phi(t) / psi(t), :", phi(0.4) / psi(0.4))
-        print(" ratio of the greeks at time ", 0.7 , "  phi(t) / psi(t), :", phi(0.7) / psi(0.7))
-        print(" ratio of the greeks at time ", 0.9 , "  phi(t) / psi(t), :", phi(0.9) / psi(0.9))
+        # NOTE: constants to compute the feedback law
+        # print(" ratio of the greeks at time ", 0.2 , "  phi(t) / psi(t), :", phi(0.2) / psi(0.2))
+        # print(" ratio of the greeks at time ", 0.4 , "  phi(t) / psi(t), :", phi(0.4) / psi(0.4))
+        # print(" ratio of the greeks at time ", 0.7 , "  phi(t) / psi(t), :", phi(0.7) / psi(0.7))
+        # print(" ratio of the greeks at time ", 0.9 , "  phi(t) / psi(t), :", phi(0.9) / psi(0.9))
         
         def u_star(t_1, X_BX):
             # t is a scalar, 
@@ -99,11 +100,11 @@ class ClosedFormSolver(object):
             plt.tight_layout()
             plt.show()
             
-        inspect_the_feedback_law()
+        # inspect_the_feedback_law() # NOTE: uncomment to see V(t,x) and u_star(t,x)
         
         
         # get the tensor X_0 and do the forward pass with feeback control u_star
-        X_BX = torch.ones(self.batch_size, self.config.dim_X).to(device)
+        X_BX = torch.ones(self.batch_size, self.config.dim_X).to(device) * self.x_0_value # NOTE: now with the added x_0_value
         t = torch.linspace(0, self.config.terminal_time, self.config.time_step_count + 1, dtype=torch.float32, device=device)
         S = np.zeros((self.config.time_step_count + 1, self.batch_size, self.config.dim_X), dtype=float)
         S[0,:,:] = X_BX.detach().cpu().numpy()  # Initial stock price
@@ -133,27 +134,15 @@ class ClosedFormSolver(object):
         
         # get the final value of the portfolio
         S_T = S[-1, :, :]
-        
-        # compute the mean and the variance of the portfolio
-        mean_portfolio = np.mean(S_T, axis=0)
-        var_portfolio = np.var(S_T, axis=0)
-        
-        # compute E[ (X_T - a)^2 ]
-        # E[ (X_T - a)^2 ] = E[ X_T^2 ] - 2 * a * E[ X_T ] + a^2
-        # E[ X_T^2 ] = E[ S_T^2 ]
-        # E[ X_T ] = E[ S_T ]
-        a = self.config.a_in_cost()
-        E_X_T_square = np.mean(S_T ** 2, axis=0)
-        E_X_T = np.mean(S_T, axis=0)
-        cost_function = E_X_T_square - 2 * a * E_X_T + a ** 2
-        print("Cost function: ", cost_function)
-        print("Mean of the portfolio: ", mean_portfolio)
-        print("Variance of the portfolio: ", var_portfolio)
+
+        # compute the cost functional (S_T - TARGET_MEAN_A)**2 for each of the samples
+        cost_functional = (S_T - TARGET_MEAN_A)**2
+        print("Cost functional: ", cost_functional)
+        mean_const_functional = np.mean(cost_functional)
+        std_const_functional = np.std(cost_functional)
         print("Time taken: ", time.time() - start_time)
-        return S, mean_portfolio, var_portfolio
-        
-        
-        
+        return S, mean_const_functional, std_const_functional
+
 
 
 # A simple object to contain the sample data
@@ -357,12 +346,35 @@ class Config(object):
         plt.grid()
         plt.show()
         return S
+    
+TARGET_MEAN_A = 1.1
 
 def main():
-    solver = ClosedFormSolver()
+    x_0_values = np.array([ 0.8, 0.9, 1.0, 1.1, 1.2, 1.3])
+    V_for_different_x0 = []
+    std_for_different_x0 = []
     
-    print('solving the closed form solution')
-    solver.get_solution()
+    for x_0 in x_0_values:
+        print('solving the closed form solution for x_0 = ', x_0)
+
+        solver = ClosedFormSolver(x_0_value=x_0)
+        S, mean_const_functional, std_const_functional = solver.get_solution()
+        V_for_different_x0.append(mean_const_functional)
+        std_for_different_x0.append(std_const_functional)
+
+    ### plot the cost functional for different x_0 values. add a transparent area for +-1 std
+    plt.figure()
+    plt.plot(x_0_values, V_for_different_x0, label='Mean Cost Functional')
+    plt.fill_between(x_0_values, 
+                     np.array(V_for_different_x0) - np.array(std_for_different_x0), 
+                     np.array(V_for_different_x0) + np.array(std_for_different_x0), 
+                     alpha=0.2, label='1 Std Dev')
+    plt.title('Cost Functional for Different Initial Values of X0')
+    plt.xlabel('Initial Value of X0')
+    plt.ylabel('Cost Functional')
+    plt.legend()
+    plt.grid()
+    plt.show()
 
 if __name__ == '__main__':
     main()
