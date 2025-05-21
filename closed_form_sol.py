@@ -33,7 +33,7 @@ class ClosedFormSolver(object):
         
         # compute Lambda(t) = sigma(t)**2 + mean_jump ** 2 + std_jump ** 2
         def Lambda(t):
-            return torch.tensor(self.config.sigma(t)**2 + self.config.jump_intensity * self.config.jump_size_std[0] ** 2, 
+            return torch.tensor(self.config.sigma(t)**2 + self.config.jump_intensity * self.config.jump_size_mean[0] ** 2 + self.config.jump_intensity * self.config.jump_size_std[0] ** 2, 
                                 dtype=torch.float32, device=device)
         
         terminal_time_tensor = torch.tensor(self.config.terminal_time, dtype=torch.float32, device=device)
