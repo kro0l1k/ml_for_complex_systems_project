@@ -17,13 +17,13 @@ print(f"Using device: {device}")
 
 class Solver(object):
     def __init__(self, x_0_value=1.0):
-        self.valid_size = 200
-        self.batch_size = 100
-        self.num_iterations = 100 # NOTE : SMALLER FOR TESTING. CHANGE BACK TO 5000
-        self.logging_frequency = 10 # NOTE: SMALLER FOR TESTING. CHANGE BACK TO 2000
+        self.valid_size = 100
+        self.batch_size = 100 # NOTE: how big should the batch size be? 
+        self.num_iterations = 5000 # NOTE : SMALLER FOR TESTING. CHANGE BACK TO 5000
+        self.logging_frequency = 500 # NOTE: SMALLER FOR TESTING. CHANGE BACK TO 2000
         self.lr_values = [5e-3, 5e-3, 5e-3]
         
-        self.lr_boundaries = [2000, 4000]
+        self.lr_boundaries = [2000, 4000] # NOTE: does this maek sense?
         self.config = Config()
 
         self.model = WholeNet().to(device)  # Move model to the selected device
@@ -446,10 +446,10 @@ class Config(object):
         # The terminal time in years
         self.terminal_time = 1
         # Roughly the number of trading days
-        self.time_step_count = math.floor(self.terminal_time * 50) #NOTE: smaller T to make it run. change it back to 200 # 20 trading days in a month. keep it small for testing.
+        self.time_step_count = math.floor(self.terminal_time * 200) #NOTE: smaller T to make it run. change it back to 200 # 20 trading days in a month. keep it small for testing.
         self.delta_t = float(self.terminal_time) / self.time_step_count
 
-        self.MC_sample_size = 10  # The integer M
+        self.MC_sample_size = 50  # The integer M
         # Generate sample points for integration with respect to nu 
         MC_sample_points_LMX = np.random.lognormal(mean=self.log_normal_mu[0], sigma=self.log_normal_sigma[0], size=(self.dim_L, self.MC_sample_size, self.dim_X)) - 1
         self.MC_sample_points_LMX = torch.tensor(MC_sample_points_LMX, dtype=torch.float32).to(device)
@@ -611,19 +611,23 @@ class Config(object):
         plt.ylabel('$S_1(t)$')
         plt.grid()
         plt.show()
+        # save the plot
+        plt.savefig('stock_price_simulation.png')
+        plt.close()
         return S
 
 TARGET_MEAN_A = 1.1
 
 def main():
-    
+    print("starting the code")
+    # Set the random seed for reproducibility   
+    torch.manual_seed(42)
     config = Config()
-    config.sample_stock_price(sample_size=10)
-    print('Training time 1:')
-    x_0_values = np.array([ 0.8, 0.9, 1.0, 1.1, 1.2, 1.3])
+    # config.sample_stock_price(sample_size=10)
+    x_0_values = np.array([ 0.9, 0.95, 1.0, 1.02, 1.05, 1.1, 1.15, 1.2])
     V_for_different_x0 = []
     std_for_different_x0 = []
-    
+    print("testing for different x_0 values")
     for x_0 in x_0_values:
         print('\n\n\n x_0: ', x_0)
         # Initialize the solver with the initial value of X0
@@ -634,7 +638,8 @@ def main():
         # plot the trajectory
         
         solver.plot_trajectory(trajectory)
-        print('Trajectory shape after the plot: ', trajectory.shape)
+        
+        # print('Trajectory shape after the plot: ', trajectory.shape)
         # compute the cost functional for each of the trajectories. get the mean and std
         cost_functional = np.mean(np.sum((trajectory - TARGET_MEAN_A) ** 2, axis=2), axis=0) 
         print('Cost functional: ', cost_functional)
@@ -656,6 +661,11 @@ def main():
     plt.legend()
     plt.grid()
     plt.show()
+    
+    # save the plot
+    plt.savefig('cost_functional.png')
+    plt.close()
+    
     
 
 if __name__ == '__main__':

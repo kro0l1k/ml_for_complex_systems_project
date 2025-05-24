@@ -1,0 +1,17 @@
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Project specific folders
+ppo_logs/
+ppo_jump_diffusion/
+
+# Other common Python ignores
+.env
+.venv
+env/
+venv/
+ENV/
+.ipynb_checkpoints/

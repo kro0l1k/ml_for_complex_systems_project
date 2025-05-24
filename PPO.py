@@ -37,11 +37,6 @@ class JumpDiffusionEnv(gym.Env):
         super().__init__()
         self.cfg = config
         self.render_mode = render_mode
-        
-        # Set up device
-        self.device = torch.device("cuda" if torch.cuda.is_available() else 
-                                  "mps" if torch.backends.mps.is_available() else 
-                                  "cpu")
 
         # Gym spaces
         self.observation_space = gym.spaces.Box(
@@ -49,13 +44,13 @@ class JumpDiffusionEnv(gym.Env):
             high=np.array([self.cfg.terminal_time, np.inf]),
             dtype=np.float32,
         )
-        # Put *reasonable* bounds on u_t so PPO doesn't diverge
+        # Put *reasonable* bounds on u_t so PPO doesn’t diverge
         self.action_space = gym.spaces.Box(
             low=np.array([-5.0]), high=np.array([5.0]), dtype=np.float32
         )
 
         self.t_idx = 0
-        self.X = self.cfg.X_init.clone().to(self.device)          # shape (1,)
+        self.X = self.cfg.X_init.clone()          # shape (1,)
         self.sample = None                        # will hold one  path of dW & jumps
 
     # ---------- helpers -----------------------------------------------------
@@ -64,9 +59,9 @@ class JumpDiffusionEnv(gym.Env):
         s = self.cfg.sample(1)                    # sample_size=1
         # Squeeze batch dimension
         s = s._replace(
-            delta_W_TBW=s.delta_W_TBW[:, 0].to(self.device),
-            jump_mask_TBLC=s.jump_mask_TBLC[:, 0].to(self.device),
-            jump_sizes_BLCX=s.jump_sizes_BLCX[0].to(self.device),
+            delta_W_TBW=s.delta_W_TBW[:, 0],
+            jump_mask_TBLC=s.jump_mask_TBLC[:, 0],
+            jump_sizes_BLCX=s.jump_sizes_BLCX[0],
         )
         return s
 
@@ -74,7 +69,7 @@ class JumpDiffusionEnv(gym.Env):
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
         self.t_idx = 0
-        self.X = self.cfg.X_init.clone().to(self.device)          # tensor (1,)
+        self.X = self.cfg.X_init.clone()          # tensor (1,)
         self.sample = self._sample_noise()
 
         obs = np.array([0.0, self.X.item()], dtype=np.float32)
@@ -85,7 +80,7 @@ class JumpDiffusionEnv(gym.Env):
         """
         Propagate one Δt step with control u = action[0]
         """
-        u = torch.tensor(action, dtype=torch.float32, device=self.device)
+        u = torch.tensor(action, dtype=torch.float32, device=self.X.device)
         if u.ndim == 1:          # PPO gives shape (1,) here
             u = u.unsqueeze(0)   # -> (1,1)
        
@@ -133,13 +128,6 @@ class JumpDiffusionEnv(gym.Env):
 class PPOAgent:
     def __init__(self, config, hyperparams: Dict = None, log_dir="ppo_logs"):
         self.cfg = config
-        
-        # Set up device
-        self.device = torch.device("cuda" if torch.cuda.is_available() else 
-                                  "mps" if torch.backends.mps.is_available() else 
-                                  "cpu")
-        print(f"Using device: {self.device} for training")
-        
         self.hparams = {
             "policy": "MlpPolicy",
             "learning_rate": 3e-4,
@@ -151,7 +139,6 @@ class PPOAgent:
             "ent_coef": 0.0,
             "target_kl": None,
             "policy_kwargs": dict(net_arch=[64, 64]),
-            "device": self.device,
         }
         if hyperparams:
             self.hparams.update(hyperparams)
@@ -189,26 +176,21 @@ class PPOAgent:
         Run the trained policy in *open-loop* Monte-Carlo, identical to ClosedFormSolver,
         and return mean / std of cost functional so results are directly comparable.
         """
-        print(f"Using device: {self.device}, for eval")
+        device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
+        print(f"Using device: {device}, for eval")
         sample_data = self.cfg.sample(eval_paths)
-        # Move sample data to the device
-        sample_data = sample_data._replace(
-            delta_W_TBW=sample_data.delta_W_TBW.to(self.device),
-            jump_mask_TBLC=sample_data.jump_mask_TBLC.to(self.device),
-            jump_sizes_BLCX=sample_data.jump_sizes_BLCX.to(self.device),
-        )
-        X = torch.ones(eval_paths, 1, dtype=torch.float32, device=self.device) * self.cfg.X_init
+        X = torch.ones(eval_paths, 1, dtype=torch.float32, device=device) * self.cfg.X_init
 
         for i in range(self.cfg.time_step_count):
             t = i * self.cfg.delta_t
             obs = torch.stack(
                 [torch.full_like(X, t), X], dim=2
             ).squeeze()  # shape (paths, 2)
-            # PPO is trained on normalised vec env ⇒ don't reuse that here;
+            # PPO is trained on normalised vec env ⇒ don’t reuse that here;
             # we just query policy net directly
             with torch.no_grad():
                 action = torch.tensor(
-                    self.policy(obs.cpu().numpy()), dtype=torch.float32, device=self.device
+                    self.policy(obs.cpu().numpy()), dtype=torch.float32, device=device
                 )
             u = action
 
