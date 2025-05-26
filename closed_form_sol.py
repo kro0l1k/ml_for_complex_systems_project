@@ -117,8 +117,8 @@ class ClosedFormSolver(object):
         for i in range(self.config.time_step_count):
                 X_BX = X_BX + self.config.drift(t[i], X_BX, u_star(t[i], X_BX)) * self.config.delta_t + \
                 torch.einsum('bxw,bw->bx', self.config.diffusion(t[i], X_BX, u_star(t[i], X_BX)), delta_W[i, :, :]) + \
-                X_BX * torch.einsum('blc,blcx->bx', jump_mask[i, :, :, :], jump_sizes) + \
-                - self.config.jump_intensity[0] * self.config.jump_size_mean[0] * X_BX * self.config.delta_t # NOTE: why with a minus sign? # REPLY: because this compensation term is intended to cancel out the jumps "on average" (over time and probability space)
+                u_star(t[i], X_BX) * torch.einsum('blc,blcx->bx', jump_mask[i, :, :, :], jump_sizes) + \
+                - self.config.jump_intensity[0] * self.config.jump_size_mean[0] * u_star(t[i], X_BX) * self.config.delta_t # NOTE: why with a minus sign? # REPLY: because this compensation term is intended to cancel out the jumps "on average" (over time and probability space)
                 
                 S[i+1,:,:] = X_BX.detach().cpu().numpy()
         
