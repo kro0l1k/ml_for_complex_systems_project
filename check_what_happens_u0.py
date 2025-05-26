@@ -86,16 +86,17 @@ class Solver(object):
 
         for t in range(self.config.time_step_count):
             current_time = t * self.config.delta_t
-            u_BU = self.model.u_net((current_time, X_BX))  # Access u_net through self.model
-            
+            # u_BU = self.model.u_net((current_time, X_BX))  # Access u_net through self.model
+            # print("needed u_BU: ", u_BU.shape)
+            u_BU = torch.ones((sample_size, self.config.dim_u), dtype=torch.float32, device=device)
             # Update X using drift
             X_BX = X_BX + self.config.drift(current_time, X_BX, u_BU) * self.config.delta_t
-            
+
             # Add diffusion term
-            X_BX = X_BX + torch.einsum('bxw,bw->bx', 
-                                       self.config.diffusion(current_time, X_BX, u_BU), 
+            X_BX = X_BX + torch.einsum('bxw,bw->bx',
+                                       self.config.diffusion(current_time, X_BX, u_BU),
                                        delta_W_TBW[t, :, :])
-            
+
             # Add jump terms
             for l in range(self.config.dim_L):
                 X_BX = X_BX + u_BU * torch.einsum('bc,bcx->bx', 
@@ -634,7 +635,7 @@ def main():
         print('\n\n\n x_0: ', x_0)
         # Initialize the solver with the initial value of X0
         solver = Solver(x_0_value=x_0)
-        solver.train()
+        # solver.train()
         # generate the trajectory
         trajectory = solver.generate_trajectoy(256, x_0_value=x_0)
         # plot the trajectory

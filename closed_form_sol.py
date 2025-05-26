@@ -18,7 +18,7 @@ print(f"Using device: {device}")
 
 class ClosedFormSolver(object):
     def __init__(self, x_0_value=1.0):
-        self.batch_size = 100
+        self.batch_size = 1000
         self.valid_size = 1000
         self.config = Config()
         self.x_0_value = x_0_value
@@ -134,7 +134,8 @@ class ClosedFormSolver(object):
         
         # get the final value of the portfolio
         S_T = S[-1, :, :]
-
+        print("shape of S_T: ", S_T.shape)
+        print("TARGET_MEAN_A: ", TARGET_MEAN_A)
         # compute the cost functional (S_T - TARGET_MEAN_A)**2 for each of the samples
         cost_functional = (S_T - TARGET_MEAN_A)**2
         print("Cost functional: ", cost_functional)
@@ -347,14 +348,14 @@ class Config(object):
         plt.show()
         return S
     
-TARGET_MEAN_A = 1.1
+TARGET_MEAN_A = 1.2
 
 def main():
-    x_0_values = np.array([ 0.8, 0.9, 1.0, 1.1, 1.2, 1.3])
+    x0_values = np.array([0.9, 0.95, 1.0, 1.02, 1.05, 1.1, 1.15, 1.2])
     V_for_different_x0 = []
     std_for_different_x0 = []
-    
-    for x_0 in x_0_values:
+
+    for x_0 in x0_values:
         print('solving the closed form solution for x_0 = ', x_0)
 
         solver = ClosedFormSolver(x_0_value=x_0)
@@ -362,10 +363,12 @@ def main():
         V_for_different_x0.append(mean_const_functional)
         std_for_different_x0.append(std_const_functional)
 
+    print("x_0 values: \n", x0_values)
+    print("Mean Cost Functional for different x_0 values: \n", V_for_different_x0)
     ### plot the cost functional for different x_0 values. add a transparent area for +-1 std
     plt.figure()
-    plt.plot(x_0_values, V_for_different_x0, label='Mean Cost Functional')
-    plt.fill_between(x_0_values, 
+    plt.plot(x0_values, V_for_different_x0, label='Mean Cost Functional')
+    plt.fill_between(x0_values, 
                      np.array(V_for_different_x0) - np.array(std_for_different_x0), 
                      np.array(V_for_different_x0) + np.array(std_for_different_x0), 
                      alpha=0.2, label='1 Std Dev')
