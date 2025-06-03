@@ -123,7 +123,7 @@ class Solver(object):
         plt.xlabel('t')
         plt.ylabel('X(t)')
         plt.grid()
-        plt.show()
+        # plt.show()
         
 class WholeNet(torch.nn.Module):
     """Building the neural network architecture"""
@@ -655,11 +655,14 @@ def main():
     ### plot the cost functional for different x_0 values. add a transparent area for +-1 std
     plt.figure()
     plt.plot(x_0_values, V_for_different_x0, label='Mean Cost Functional')
+    lower_bound = np.array(V_for_different_x0) - np.array(std_for_different_x0)
+    lower_bound[lower_bound < 0] = 0  # Ensure lower bound is non-negative
+    
     plt.fill_between(x_0_values, 
-                     np.array(V_for_different_x0) - np.array(std_for_different_x0), 
+                     lower_bound, 
                      np.array(V_for_different_x0) + np.array(std_for_different_x0), 
                      alpha=0.2, label='1 Std Dev')
-    plt.title('Cost Functional for Different Initial Values of X0')
+    plt.title('Cost Functional for Different Initial Values of X0, and const control = 1')
     plt.xlabel('Initial Value of X0')
     plt.ylabel('Cost Functional')
     plt.legend()

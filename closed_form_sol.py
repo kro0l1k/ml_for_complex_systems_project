@@ -18,8 +18,7 @@ print(f"Using device: {device}")
 
 class ClosedFormSolver(object):
     def __init__(self, x_0_value=1.0):
-        self.batch_size = 1000
-        self.valid_size = 1000
+        self.batch_size = 500
         self.config = Config()
         self.x_0_value = x_0_value
 
@@ -29,7 +28,7 @@ class ClosedFormSolver(object):
         """
         start_time = time.time()
         training_history = []
-        validation_data = self.config.sample(self.valid_size)
+        validation_data = self.config.sample(self.batch_size)
         
         # compute Lambda(t) = sigma(t)**2 + mean_jump ** 2 + std_jump ** 2
         def Lambda(t):
@@ -68,7 +67,7 @@ class ClosedFormSolver(object):
             # Make sure X_BX is on the same device
             X_BX = X_BX.to(device)
             
-            ustar = (self.config.rho(0) - self.config.mu(0)) * (phi(t_1) * X_BX + psi(t_1)) / (phi(t_1) * Lambda(0))
+            ustar = (self.config.rho(0) - self.config.mu(0)) * (phi(t_1) * X_BX + psi(t_1) ) / (phi(t_1) * Lambda(0))
             return ustar
         
         def inspect_the_feedback_law():
@@ -138,7 +137,7 @@ class ClosedFormSolver(object):
         print("TARGET_MEAN_A: ", TARGET_MEAN_A)
         # compute the cost functional (S_T - TARGET_MEAN_A)**2 for each of the samples
         cost_functional = (S_T - TARGET_MEAN_A)**2
-        print("Cost functional: ", cost_functional)
+        # print("Cost functional: ", cost_functional)
         mean_const_functional = np.mean(cost_functional)
         std_const_functional = np.std(cost_functional)
         print("Time taken: ", time.time() - start_time)
@@ -179,17 +178,17 @@ class Config(object):
         self.jump_size_std = np.sqrt((np.exp(self.log_normal_sigma ** 2) - 1) * np.exp(2 * self.log_normal_mu + self.log_normal_sigma ** 2))
 
         # The terminal time in years
-        self.terminal_time = 1.0
+        self.terminal_time = 4
         # Roughly the number of trading days
         self.time_step_count = math.floor(self.terminal_time * 200)  # 20 trading days in a month. keep it small for testing.
         self.delta_t = float(self.terminal_time) / self.time_step_count
 
-        self.MC_sample_size = 10  # The integer M
+        self.MC_sample_size = 100  # The integer M
         # Generate sample points for integration with respect to nu 
         MC_sample_points_LMX = np.random.lognormal(mean=self.log_normal_mu[0], sigma=self.log_normal_sigma[0], size=(self.dim_L, self.MC_sample_size, self.dim_X)) - 1
         self.MC_sample_points_LMX = torch.tensor(MC_sample_points_LMX, dtype=torch.float32).to(device)
 
-    def sample(self, sample_size : int):
+    def sample(self, sample_size: int):
         delta_W_TBW = np.random.normal(size=(self.time_step_count, sample_size, self.dim_W)) * np.sqrt(self.delta_t)
 
         # jump_counts is of shape (sample_size, dim_L)
@@ -224,7 +223,7 @@ class Config(object):
     def a_in_cost(self):
         # the constant a in the equivalent problem formulation: sup E [x(T - a)**2]
         # output shape: scalar
-        return 1.1
+        return torch.tensor(TARGET_MEAN_A, dtype=torch.float32, device=device)
 
     def f(self, t, x, u):
         # Output shape: (batch_size, 1)
@@ -348,14 +347,17 @@ class Config(object):
         plt.show()
         return S
     
-TARGET_MEAN_A = 1.2
+TARGET_MEAN_A = 150
 
 def main():
-    x0_values = np.array([0.9, 0.95, 1.0, 1.02, 1.05, 1.1, 1.15, 1.2])
+    
+    # x_0_values = np.array([1.0, 1.01,  1.02, 1.03, 1.04, 1.05, 1.06])
+    # x_0_values = np.array([0.9 , 0.95, 1.0, 1.02, 1.05, 1.1, 1.15, 1.2])
+    x_0_values = np.array([ 100, 110, 120, 130, 140, 150, 160])
     V_for_different_x0 = []
     std_for_different_x0 = []
 
-    for x_0 in x0_values:
+    for x_0 in x_0_values:
         print('solving the closed form solution for x_0 = ', x_0)
 
         solver = ClosedFormSolver(x_0_value=x_0)
@@ -363,12 +365,12 @@ def main():
         V_for_different_x0.append(mean_const_functional)
         std_for_different_x0.append(std_const_functional)
 
-    print("x_0 values: \n", x0_values)
+    print("x_0 values: \n", x_0_values)
     print("Mean Cost Functional for different x_0 values: \n", V_for_different_x0)
     ### plot the cost functional for different x_0 values. add a transparent area for +-1 std
     plt.figure()
-    plt.plot(x0_values, V_for_different_x0, label='Mean Cost Functional')
-    plt.fill_between(x0_values, 
+    plt.plot(x_0_values, V_for_different_x0, label='Mean Cost Functional')
+    plt.fill_between(x_0_values, 
                      np.array(V_for_different_x0) - np.array(std_for_different_x0), 
                      np.array(V_for_different_x0) + np.array(std_for_different_x0), 
                      alpha=0.2, label='1 Std Dev')
