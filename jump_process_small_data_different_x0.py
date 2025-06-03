@@ -17,14 +17,15 @@ print(f"Using device: {device}")
 
 class Solver(object):
     def __init__(self, x_0_value=1.0):
-        self.valid_size = 512
-        self.batch_size = 512 # NOTE: how big should the batch size be? 
-        self.num_iterations = 200 #1000 # NOTE : SMALLER FOR TESTING. CHANGE BACK TO 5000
-        self.logging_frequency = 20 #100 # NOTE: SMALLER FOR TESTING. CHANGE BACK TO 2000
-        self.lr_values = [5e-3, 1e-3, 5e-3]
-        
-        self.lr_boundaries = [500, 1000] # NOTE: does this maek sense?
         self.config = Config()
+        
+        self.valid_size = self.config.valid_size
+        self.batch_size = self.config.batch_size
+        self.num_iterations = self.config.num_iterations
+        self.logging_frequency = self.config.logging_frequency
+        self.lr_values = self.config.lr_values
+        self.lr_boundaries = self.config.lr_boundaries
+        self.x_0_value = x_0_value
 
         self.model = WholeNet().to(device)  # Move model to the selected device
         print("y_intial: ", self.model.p_init.detach().cpu().numpy())
@@ -428,6 +429,17 @@ class Config(object):
         self.dim_u = 1              # The dimension of U
         self.dim_W = 1              # The integer m
         self.dim_L = 1              # The integer l 
+        
+        ###
+        # training config: 
+        self.valid_size = 512
+        self.batch_size = 512 # NOTE: how big should the batch size be? 
+        self.num_iterations = 100 #1000 # NOTE : SMALLER FOR TESTING. CHANGE BACK TO 5000
+        self.logging_frequency = 20 #100 # NOTE: SMALLER FOR TESTING. CHANGE BACK TO 2000
+        self.lr_values = [5e-1, 1e-2, 5e-3]
+
+        self.lr_boundaries = [int(0.2 * self.num_iterations), int(0.8 * self.num_iterations)] 
+        ###
         
         # make sure L is one, if not throw a warning
         if self.dim_L != 1:
