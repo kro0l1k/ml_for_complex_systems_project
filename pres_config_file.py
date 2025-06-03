@@ -25,7 +25,7 @@ class Config(object):
         self.batch_size = 512 # NOTE: how big should the batch size be? 
         self.num_iterations = 100 #1000 # NOTE : SMALLER FOR TESTING. CHANGE BACK TO 5000
         self.logging_frequency = 20 #100 # NOTE: SMALLER FOR TESTING. CHANGE BACK TO 2000
-        self.lr_values = [5e-1, 1e-2, 5e-3]
+        self.lr_values = [0.1, 0.01, 0.005]
 
         self.lr_boundaries = [int(0.2 * self.num_iterations), int(0.8 * self.num_iterations)] 
         ###
@@ -47,10 +47,11 @@ class Config(object):
         self.jump_size_std = np.sqrt((np.exp(self.log_normal_sigma ** 2) - 1) * np.exp(2 * self.log_normal_mu + self.log_normal_sigma ** 2))
 
         # The terminal time in years
-        self.terminal_time = 10.0
+        self.terminal_time = 4.0
+        self.tics_per_unit_of_time = 100  # The number of tics for one year, e.g. 100 tics for one year means 1 tic is 1/100 year
         
         # Roughly the number of trading days
-        self.time_step_count = math.floor(self.terminal_time * 100)  # 20 trading days in a month. keep it small for testing.
+        self.time_step_count = math.floor(self.terminal_time * self.tics_per_unit_of_time)  # 20 trading days in a month. keep it small for testing.
         # print(f"Time step count: {self.time_step_count}")
         self.delta_t = float(self.terminal_time) / self.time_step_count
         # print(f"Delta t: {self.delta_t}")

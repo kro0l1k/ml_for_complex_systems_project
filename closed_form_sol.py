@@ -147,7 +147,7 @@ class ClosedFormSolver(object):
 
 def main():
     
-    x_0_values = np.array([100, 110, 120, 130, 140, 150, 160])
+    x_0_values = np.array([70, 80, 90, 100, 110, 120])
     V_for_different_x0 = []
     std_for_different_x0 = []
 
