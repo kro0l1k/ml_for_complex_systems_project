@@ -85,26 +85,17 @@ class Solver(object):
         X_BX = self.config.X_init.repeat(sample_size, 1) * x_0_value  # Shape: (sample_size, dim_X)
         trajectory = []
         trajectory.append(X_BX.detach().cpu().numpy())  # Store initial state
+        t = np.arange(0, self.config.time_step_count) * self.config.delta_t
 
-        for t in range(self.config.time_step_count):
+        for i in range(0, self.config.time_step_count):
             current_time = t * self.config.delta_t
             u_BU = self.model.u_net((current_time, X_BX))  # Access u_net through self.model
             
-            # Update X using drift
-            X_BX = X_BX + self.config.drift(current_time, X_BX, u_BU) * self.config.delta_t
-            
-            # Add diffusion term
-            X_BX = X_BX + torch.einsum('bxw,bw->bx', 
-                                       self.config.diffusion(current_time, X_BX, u_BU), 
-                                       delta_W_TBW[t, :, :])
-            
-            # Add jump terms
+            X_BX = X_BX + self.config.drift(t[i], X_BX, u_BU) * self.config.delta_t + \
+                torch.einsum('bxw,bw->bx', self.config.diffusion(t[i], X_BX, u_BU), delta_W_TBW[i, :, :])
             for l in range(self.config.dim_L):
-                X_BX = X_BX + u_BU * torch.einsum('bc,bcx->bx', 
-                                                 jump_mask_TBLC[t, :, l, :], 
-                                                 jump_sizes_BLCX[:, l, :, :])
-                # Compensation term
-                X_BX = X_BX - self.config.jump_intensity[l] * (np.exp(self.config.log_normal_mu[l] + 0.5 * self.config.log_normal_sigma[l] ** 2) - 1) * u_BU * self.config.delta_t
+                X_BX = X_BX + u_BU * torch.einsum('bc,bcx->bx', jump_mask_TBLC[i, :, l, :], jump_sizes_BLCX[:, l, :, :])
+                X_BX = X_BX - self.config.jump_intensity[l] * (np.exp(self.config.log_normal_mu[l] + 0.5 * self.config.log_normal_sigma[l] ** 2) - 1)* u_BU * self.config.delta_t
 
             trajectory.append(X_BX.detach().cpu().numpy())
 
@@ -167,7 +158,7 @@ class WholeNet(torch.nn.Module):
                 torch.einsum('bjkn,bjk->bn', self.config.diffusion_u(t[i], X_BX, u_BU), q_BXW)
             
             for l in range(self.config.dim_L):
-                Hu = Hu + self.config.jump_intensity[l] * torch.einsum('bc,bcx->bx', jump_mask_TBLC[i, :, l, :], jump_sizes_BLCX[:, l, :, :] * r_jump_BLCX[:, l, :, :])
+                Hu = Hu + self.config.jump_intensity[l] * torch.mean(torch.einsum('bjmu,bjm->bu', self.config.eta_u(t[i], X_BX, u_BU, MC_sample_points_BLMX[:, l, :, :]), r_monte_BLMX[:, l, :, :]), dim=1)
 
             int_Hu = int_Hu + Hu**2 # NOTE: this is where the square was missing! 
 
@@ -180,7 +171,7 @@ class WholeNet(torch.nn.Module):
 
             # Update X
             X_BX = X_BX + self.config.drift(t[i], X_BX, u_BU) * self.config.delta_t + \
-                X_BX * torch.einsum('bxw,bw->bx', self.config.diffusion(t[i], X_BX, u_BU), delta_W_TBW[i, :, :])
+                torch.einsum('bxw,bw->bx', self.config.diffusion(t[i], X_BX, u_BU), delta_W_TBW[i, :, :])
             for l in range(self.config.dim_L):
                 X_BX = X_BX + u_BU * torch.einsum('bc,bcx->bx', jump_mask_TBLC[i, :, l, :], jump_sizes_BLCX[:, l, :, :])
                 X_BX = X_BX - self.config.jump_intensity[l] * (np.exp(self.config.log_normal_mu[l] + 0.5 * self.config.log_normal_sigma[l] ** 2) - 1)* u_BU * self.config.delta_t

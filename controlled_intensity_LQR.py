@@ -18,7 +18,7 @@ class Solver(object):
     def __init__(self, config):
         self.valid_size = 256
         self.batch_size = 256 # NOTE: how big should the batch size be? 
-        self.num_iterations = 1 # NOTE : SMALLER FOR TESTING. CHANGE BACK TO 5000
+        self.num_iterations = 1000 # NOTE : SMALLER FOR TESTING. CHANGE BACK TO 5000
         self.logging_frequency = 100 # NOTE: SMALLER FOR TESTING. CHANGE BACK TO 2000
         self.lr_values = [5e-3, 5e-3, 5e-3]
         
@@ -96,7 +96,7 @@ class Solver(object):
                 jump_sizes_BL1X[:, l, 0, :] += (jump_counts_B1 > 0) * jump_size
 
             X_BX = X_BX + self.config.drift(t[i], X_BX, u_BU) * self.config.delta_t + \
-                X_BX * torch.einsum('bxw,bw->bx', self.config.diffusion(t[i], X_BX, u_BU), delta_W_TBW[i, :, :])
+                torch.einsum('bxw,bw->bx', self.config.diffusion(t[i], X_BX, u_BU), delta_W_TBW[i, :, :])
             for l in range(self.config.dim_L):
                 X_BX += jump_sizes_BL1X[:, l, 0, :] 
 
@@ -181,7 +181,7 @@ class WholeNet(torch.nn.Module):
 
             # Update X
             X_BX = X_BX + self.config.drift(t[i], X_BX, u_BU) * self.config.delta_t + \
-                X_BX * torch.einsum('bxw,bw->bx', self.config.diffusion(t[i], X_BX, u_BU), delta_W_TBW[i, :, :])
+                torch.einsum('bxw,bw->bx', self.config.diffusion(t[i], X_BX, u_BU), delta_W_TBW[i, :, :])
             for l in range(self.config.dim_L):
                 X_BX += jump_sizes_BL1X[:, l, 0, :] 
 
