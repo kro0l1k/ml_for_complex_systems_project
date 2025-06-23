@@ -2,8 +2,7 @@ import time
 import numpy as np
 import torch
 import math
-from scipy.stats import multivariate_normal as normal
-from collections import namedtuple
+from scipy.integrate import solve_ivp
 import matplotlib.pyplot as plt
 
 LAMBDA = 0.1 # was 0.05
@@ -19,7 +18,7 @@ class Solver(object):
     def __init__(self, config):
         self.valid_size = 256
         self.batch_size = 256 # NOTE: how big should the batch size be? 
-        self.num_iterations = 1000 # NOTE : SMALLER FOR TESTING. CHANGE BACK TO 5000
+        self.num_iterations = 1 # NOTE : SMALLER FOR TESTING. CHANGE BACK TO 5000
         self.logging_frequency = 100 # NOTE: SMALLER FOR TESTING. CHANGE BACK TO 2000
         self.lr_values = [5e-3, 5e-3, 5e-3]
         
@@ -89,24 +88,17 @@ class Solver(object):
             
             int_f = int_f + self.config.f(t[i], X_BX, u_BU) * self.config.delta_t
 
+            jump_sizes_BL1X = torch.zeros(sample_size, self.config.dim_L, 1, self.config.dim_X, dtype=torch.float32).to(device)  # Shape: (sample_size, dim_L, dim_X)
+            for l in range(self.config.dim_L):
+                jump_counts_B1 = torch.poisson(self.config.jump_intensity(l, t[i], X_BX, u_BU) * self.config.delta_t)
+                # for jump_count in range(torch.max(jump_counts_B)):
+                jump_size = self.config.jump_size_distribution.sample((sample_size,))
+                jump_sizes_BL1X[:, l, 0, :] += (jump_counts_B1 > 0) * jump_size
+
             X_BX = X_BX + self.config.drift(t[i], X_BX, u_BU) * self.config.delta_t + \
                 X_BX * torch.einsum('bxw,bw->bx', self.config.diffusion(t[i], X_BX, u_BU), delta_W_TBW[i, :, :])
             for l in range(self.config.dim_L):
                 X_BX += jump_sizes_BL1X[:, l, 0, :] 
-            # Update X using drift
-            X_BX = X_BX + self.config.drift(t[i], X_BX, u_BU) * self.config.delta_t
-            
-            # Add diffusion term
-            X_BX = X_BX + torch.einsum('bxw,bw->bx', 
-                                       self.config.diffusion(t[i], X_BX, u_BU), 
-                                       delta_W_TBW[i, :, :])
-            
-            # Add jump terms
-            for l in range(self.config.dim_L):
-                jump_counts_B = torch.poisson(self.config.jump_intensity(l, t[i], X_BX, u_BU) * self.config.delta_t)
-                # for jump_count in range(torch.max(jump_counts_B)):
-                jump_size = self.config.jump_size_distribution.sample((sample_size,))
-                X_BX += (jump_counts_B > 0) * jump_size
 
             trajectory.append(X_BX.detach().cpu().numpy())
 
@@ -455,6 +447,22 @@ class Config(object):
         # Generate sample points for integration with respect to jump_size_distribution
         self.MC_sample_points_LMX = self.jump_size_distribution.sample((self.dim_L, self.MC_sample_size)).to(device)
 
+        
+        # Closed-form solution
+        self.zeta = torch.trace(self.jump_Covariance_XX)
+        sol = solve_ivp(lambda t, h: (h ** 2) / (2 * self.c_1 + h * float(self.zeta * self.Lambda_2)),
+                        (self.terminal_time, 0.0), 
+                        [2 * self.c_2], 
+                        t_eval=np.flip(np.arange(0, self.time_step_count + 1) * self.delta_t),
+                        method="RK45")
+        self.h_closed_form = np.flip(sol.y[0])
+        int_h = np.trapz(self.h_closed_form, np.arange(0, self.time_step_count + 1) * self.delta_t)
+        self.f_0 = 0.5 * (torch.trace(self.Sigma_XW @ self.Sigma_XW.T) + self.Lambda_1 * self.zeta) * \
+                torch.tensor(int_h, dtype=torch.float32, device=device)
+
+    def V_0(self, x):
+        return 0.5 * self.h_closed_form[0] * torch.sum(x ** 2) + self.f_0
+
     def sample(self, sample_size : int):
         delta_W_TBW = np.random.normal(size=(self.time_step_count, sample_size, self.dim_W)) * np.sqrt(self.delta_t)
         return torch.tensor(delta_W_TBW, dtype=torch.float32).to(device)
@@ -530,6 +538,7 @@ def main():
     initial_value_first_components = np.linspace(-2.5, 2.5, int((2.5 - (-2.5)) / 0.5) + 1)
     print("first components of X_init: ", initial_value_first_components)
     V_for_different_X_init = []
+    closed_form_V_for_different_X_init = []
     std_for_different_X_init = []
     print("testing for different X_init values")
     for x_1 in initial_value_first_components:
@@ -541,18 +550,17 @@ def main():
         solver.train()
         # generate the trajectory
         trajectory, cost_functional = solver.generate_trajectoy(256)
-        # plot the trajectory
-        
-        solver.plot_trajectory(trajectory)
         
         # print('Trajectory shape after the plot: ', trajectory.shape)
         # compute the cost functional for each of the trajectories. get the mean and std
         print("cost finctional shape: ", cost_functional.shape)
-        print('Cost functional: ', cost_functional)
-        print('Mean: ', np.mean(cost_functional))
-        print('Std: ', np.std(cost_functional))
-        V_for_different_X_init.append(np.mean(cost_functional))
-        std_for_different_X_init.append(np.std(cost_functional))
+        print('Mean: ', cost_functional.mean().item())
+        print('Std: ', cost_functional.std().item())
+        solver.plot_trajectory(trajectory)
+
+        V_for_different_X_init.append(cost_functional.mean().item())
+        closed_form_V_for_different_X_init.append(config.V_0(config.X_init).detach().cpu().numpy())
+        std_for_different_X_init.append(cost_functional.std().item())
     
     ### plot the cost functional for different X_init values. add a transparent area for +-1 std
     plt.figure()
@@ -561,6 +569,7 @@ def main():
                      np.array(V_for_different_X_init) - np.array(std_for_different_X_init), 
                      np.array(V_for_different_X_init) + np.array(std_for_different_X_init), 
                      alpha=0.2, label='1 Std Dev')
+    plt.plot(initial_value_first_components, closed_form_V_for_different_X_init, label='Closed Form Solution', linestyle='--')
     plt.title('Cost Functional for Different Initial Values of X0')
     plt.xlabel('Initial Value of X0')
     plt.ylabel('Cost Functional')
