@@ -202,7 +202,7 @@ class Config(object):
         for i in range(self.time_step_count):
                 X = X + self.drift(t[i], X, X) * self.delta_t + \
                 torch.einsum('bxw,bw->bx', self.diffusion(t[i], X, X), sample_data.delta_W_TBW[i, :, :]) + \
-                X * torch.einsum('blc,blcx->bx', sample_data.jump_mask_TBLC[i, :, :, :], sample_data.jump_sizes_BLCX) + \
+                torch.einsum('blc,blcx->bx', sample_data.jump_mask_TBLC[i, :, :, :], sample_data.jump_sizes_BLCX) + \
                 - self.jump_intensity[0] * self.jump_size_mean[0] * X * self.delta_t
                 # S_t[i, :] * sample_data.jump_mask_TBLC[i, 0, :, :] * sample_data.jump_sizes_BLCX[0, :, :, :] * sample_data.jump_mask_TBLC[i, 0, :, :].unsqueeze(2)
                 
