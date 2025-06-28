@@ -87,8 +87,7 @@ class Solver(object):
         t = np.arange(0, self.config.time_step_count) * self.config.delta_t
 
         for i in range(0, self.config.time_step_count):
-            current_time = t * self.config.delta_t
-            u_BU = self.model.u_net((current_time, X_BX))  # Access u_net through self.model
+            u_BU = self.model.u_net((t[i], X_BX))  # Access u_net through self.model
             
             X_BX = X_BX + self.config.drift(t[i], X_BX, u_BU) * self.config.delta_t + \
                 torch.einsum('bxw,bw->bx', self.config.diffusion(t[i], X_BX, u_BU), delta_W_TBW[i, :, :])
@@ -144,11 +143,25 @@ class WholeNet(torch.nn.Module):
         MC_sample_points_BLMX = self.config.MC_sample_points_LMX.repeat(sample_size, 1, 1, 1)  # Shape: (sample_size, dim_L, MC_sample_size, dim_X)
         
         for i in range(0, self.config.time_step_count):
+            # Compute value of q according to the DP relation
             u_BU = self.u_net((t[i], X_BX))   # Shape: (sample_size, dim_u)
             X_BX = X_BX.requires_grad_(True)
-            V_xx_BXBX = torch.autograd.functional.jacobian(lambda input: self.v_x_net((t[i], input)), X_BX)
-            V_xx_XXB = torch.diagonal(V_xx_BXBX, dim1=0, dim2=2)
-            q_BXW = torch.einsum('xjb,bjw->bxw', V_xx_XXB, self.config.diffusion(t[i], X_BX, u_BU))
+            V_x_BX = self.v_x_net((t[i], X_BX))
+            diffusion_BXW = self.config.diffusion(t[i], X_BX.detach(), u_BU.detach())
+
+            q_list = []
+            for w_idx in range(self.config.dim_W):
+                hvp = torch.autograd.grad(
+                    outputs=V_x_BX,
+                    inputs=X_BX,
+                    grad_outputs=diffusion_BXW[:, :, w_idx],
+                    retain_graph=True,
+                    create_graph=True,
+                )[0]
+                q_list.append(hvp)
+            q_BXW = torch.stack(q_list, dim=2)
+
+            # Compute value of r according to the DP relation
             for l in range(self.config.dim_L):
                 r_jump_BLX[:, l, :] = self.v_x_net((t[i], X_BX + u_BU * jump_sizes_TBLX[i, :, l, :])) - self.v_x_net((t[i], X_BX))
 
