@@ -5,7 +5,8 @@ import math
 from scipy.integrate import solve_ivp
 import matplotlib.pyplot as plt
 
-LAMBDA = 0.05 # was 0.05
+eta_1 = 0.025 # or 0.05
+eta_2 = 0.5 # or 0
 MC_SAM_SIZE = 250
 BATCH_SIZE = 256
 NUM_ITERATIONS = 2000
@@ -20,7 +21,7 @@ torch.set_default_dtype(torch.float32)
 device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
 print(" --- config params -----")
 print(f"Using device: {device}, LQR example")
-print("training using LAMBDA: ", LAMBDA)
+print("training using eta_1: ", eta_1)
 print("using MC_SAMPLE_SIZE = ", MC_SAM_SIZE)
 print("using NUM_ITERATIONS  = ", NUM_ITERATIONS )
 print("using TERMINA TIME = ", TERMINAL_TIME)
@@ -77,11 +78,11 @@ class Solver(object):
                     validation_history[step, 1] = loss_.item()
                     validation_history[step, 2] = performance_.item()
             else:
-                validation_history[step, 0] = None
+                validation_history[step, 1] = -1
 
             # Gradient descent
             self.optimizer.zero_grad()
-            loss, performance, ratio = self.model(self.config.sample(self.batch_size))
+            loss, performance, ratio = self.model(self.config.sample(self.batch_size), training=True)
             training_history[step, 0] = step
             training_history[step, 1] = loss.item()
             training_history[step, 2] = performance.item()
@@ -91,7 +92,7 @@ class Solver(object):
             self.scheduler.step()
 
         self.training_history = training_history
-        validation_history = validation_history[validation_history[:, 0] != None]  # Remove rows where step is None
+        validation_history = validation_history[validation_history[:, 1] > 0]
         # Plot the graph of loss
         training_history = np.array(training_history)
         plt.plot(training_history[:, 0], training_history[:, 1], label='Training')
@@ -220,11 +221,12 @@ class WholeNet(torch.nn.Module):
             for l in range(self.config.dim_L):
                 X_BX += jump_sizes_BX
 
+        cost = torch.mean(int_f + self.config.g(X_BX))
+
         terminal_value_loss = p_BX - self.config.g_x(X_BX)
-        loss = torch.mean(torch.sum(terminal_value_loss**2, 1, keepdim=True)) + LAMBDA * int_Hu
+        loss = torch.mean(torch.sum(terminal_value_loss**2, 1, keepdim=True)) + eta_1 * int_Hu + eta_2 * cost
         ratio = torch.mean(torch.sum(terminal_value_loss**2, 1, keepdim=True)) / int_Hu
 
-        cost = torch.mean(int_f + self.config.g(X_BX))
         return loss, cost, ratio
 
 class FNNetQ(torch.nn.Module):
@@ -580,7 +582,7 @@ class Config(object):
 
 # Set the random seed for reproducibility
 torch.manual_seed(42)
-dim = 5
+dim = 10
 config = Config(dim=dim,
                 sigma_XW= torch.rand(dim, dim, dtype=torch.float32, device=device),  # The diffusion coefficient Sigma
                 jump_Covariance_XX= torch.diag(torch.rand(dim, dtype=torch.float32, device=device))  # The covariance matrix of the jump sizes
@@ -644,10 +646,10 @@ print("Std: \n", std_for_different_X_init)
 plt.figure()
 plt.plot(initial_value_first_components, V_for_different_X_init, label='Mean Cost Functional')
 plt.fill_between(initial_value_first_components,
-                 np.array(V_for_different_X_init) - np.array(std_for_different_X_init),
-                 np.array(V_for_different_X_init) + np.array(std_for_different_X_init),
-                 alpha=0.2, label='1 Std Dev')
-plt.plot(initial_value_first_components, closed_form_V_for_different_X_init, label='Closed Form Solution', linestyle='--')
+                 np.array(V_for_different_X_init) - 0.2 * np.array(std_for_different_X_init),
+                 np.array(V_for_different_X_init) + 0.2 * np.array(std_for_different_X_init),
+                 alpha=0.2, label='0.2 Std Dev')
+plt.plot(initial_value_first_components, closed_form_V_for_different_X_init, label='Closed Form Cost Functional', linestyle='--')
 plt.title('Cost Functional for Different Initial Values of X0')
 plt.xlabel('Initial Value of X0')
 plt.ylabel('Cost Functional')

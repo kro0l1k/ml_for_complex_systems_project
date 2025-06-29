@@ -31,7 +31,7 @@ class Config(object):
         self.valid_size = 512
         self.batch_size = 256 # NOTE: how big should the batch size be?
         self.MC_sample_size = 256  # The integer M
-        self.num_iterations = 0
+        self.num_iterations = 3000
         self.logging_frequency = 100
         self.lr_values = [0.1, 0.01, 0.005]
 
@@ -751,7 +751,7 @@ def main():
     print("target mean A: ", config.TARGET_MEAN_A)
 
     # config.sample_stock_price(sample_size=10)
-    x_0_values = np.array([0.7, 0.8, 0.9, 1.0, 1.1, 1.2])
+    x_0_values = np.array([0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4])
     V_for_different_x0 = []
     closed_form_V_for_different_x0 = []
     std_for_different_x0 = []
@@ -811,12 +811,12 @@ def main():
 
     ### plot the cost functional for different x_0 values. add a transparent area for +-1 std
     plt.figure()
-    plt.plot(x_0_values, V_for_different_x0, label='Mean Cost Functional', linestyle='--')
-    plt.plot(x_0_values, closed_form_V_for_different_x0, label='Closed Form Cost Functional')
+    plt.plot(x_0_values, V_for_different_x0, label='Mean Cost Functional')
+    plt.plot(x_0_values, closed_form_V_for_different_x0, label='Closed Form Cost Functional', linestyle='--')
     plt.fill_between(x_0_values,
-                     np.array(V_for_different_x0) - np.array(std_for_different_x0),
-                     np.array(V_for_different_x0) + np.array(std_for_different_x0),
-                     alpha=0.2, label='1 Std Dev')
+                    np.array(V_for_different_x0) - 0.2 * np.array(std_for_different_x0),
+                    np.array(V_for_different_x0) + 0.2 * np.array(std_for_different_x0),
+                    alpha=0.2, label='0.2 Std Dev')
     plt.title('Cost Functional for Different Initial Values of X0')
     plt.xlabel('Initial Value of X0')
     plt.ylabel('Cost Functional')
