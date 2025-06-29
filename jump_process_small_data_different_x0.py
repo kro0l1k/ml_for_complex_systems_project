@@ -31,7 +31,7 @@ class Config(object):
         self.valid_size = 512
         self.batch_size = 256 # NOTE: how big should the batch size be?
         self.MC_sample_size = 256  # The integer M
-        self.num_iterations = 3000
+        self.num_iterations = 0
         self.logging_frequency = 100
         self.lr_values = [0.1, 0.01, 0.005]
 
@@ -811,7 +811,8 @@ def main():
 
     ### plot the cost functional for different x_0 values. add a transparent area for +-1 std
     plt.figure()
-    plt.plot(x_0_values, V_for_different_x0, label='Mean Cost Functional')
+    plt.plot(x_0_values, V_for_different_x0, label='Mean Cost Functional', linestyle='--')
+    plt.plot(x_0_values, closed_form_V_for_different_x0, label='Closed Form Cost Functional')
     plt.fill_between(x_0_values,
                      np.array(V_for_different_x0) - np.array(std_for_different_x0),
                      np.array(V_for_different_x0) + np.array(std_for_different_x0),
