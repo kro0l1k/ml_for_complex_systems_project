@@ -5,7 +5,8 @@ import math
 from collections import namedtuple
 import matplotlib.pyplot as plt
 
-LAMBDA = 0.05 # was 0.05
+eta_1 = 0.025
+eta_2 = 0.5
 
 # Set default tensor type to float
 torch.set_default_dtype(torch.float32)
@@ -30,7 +31,7 @@ class Config(object):
         self.valid_size = 512
         self.batch_size = 256 # NOTE: how big should the batch size be?
         self.MC_sample_size = 256  # The integer M
-        self.num_iterations = 1000
+        self.num_iterations = 3000
         self.logging_frequency = 100
         self.lr_values = [0.1, 0.01, 0.005]
 
@@ -44,7 +45,7 @@ class Config(object):
 
         self.X_init = torch.ones(self.dim_X, dtype=torch.float32, device=device) # The initial value of X at time 0
 
-        self.jump_intensity = np.array([1,  # Jumps per year in average,
+        self.jump_intensity = np.array([1.0,  # Jumps per year in average,
                                         ], dtype=float) # The l-dimensional vector lambda
         self.log_normal_mu = np.array([-0.05,
                                         ], dtype=float)
@@ -63,8 +64,10 @@ class Config(object):
         self.delta_t = float(self.terminal_time) / self.time_step_count
         # print(f"Delta t: {self.delta_t}")
         # Generate sample points for integration with respect to nu
-        MC_sample_points_LMX = np.random.lognormal(mean=self.log_normal_mu[0], sigma=self.log_normal_sigma[0], size=(self.dim_L, self.MC_sample_size, self.dim_X)) - 1
-        self.MC_sample_points_LMX = torch.tensor(MC_sample_points_LMX, dtype=torch.float32).to(device)
+
+    def generate_MC_sample_points(self, batch_size: int):
+        MC_sample_points_BMX = np.random.lognormal(mean=self.log_normal_mu[0], sigma=self.log_normal_sigma[0], size=(batch_size, self.MC_sample_size, self.dim_X)) - 1
+        return torch.tensor(MC_sample_points_BMX, dtype=torch.float32).to(device)
 
     def sample(self, sample_size: int):
         delta_W_TBW = np.random.normal(size=(self.time_step_count, sample_size, self.dim_W)) * np.sqrt(self.delta_t)
@@ -174,25 +177,6 @@ class Config(object):
         # diffusion_u(t, x, u)[b, j, k, :] = \partial diffusion^{j,k}(t, x, u) / \partial u
         return self.sigma(t) * torch.ones(x.shape[0], self.dim_X, self.dim_W, self.dim_u, dtype=torch.float32).to(x.device)
 
-    def eta(self, t, x, u, z):
-        # Shape of u: (batch_size, dim_X)
-        # Shape of z: (batch_size, dim_L)
-        # eta(u, z) = u * transpose(z)
-        # Output shape: (batch_size, dim_X, dim_L)
-        return u.unsqueeze(2) * z.unsqueeze(1)
-
-    def eta_x(self, t, x, u, z):
-        # Partial derivatives of each component of eta with respect to x
-        # Output shape: (batch_size, dim_X, dim_L, dim_X)
-        # eta_x(t, x, u, z)[b, j, k, :] = \partial eta^{j,k}(t, x, u, z) / \partial x
-        return torch.zeros(x.shape[0], self.dim_X, self.dim_L, self.dim_X, dtype=torch.float32).to(x.device)
-
-    def eta_u(self, t, x, u, z):
-        # Partial derivatives of each component of eta with respect to u
-        # Output shape: (batch_size, dim_X, dim_L, dim_u)
-        # eta_u(t, x, u, z)[b, j, k, :] = \partial eta^{j,k}(t, x, u, z) / \partial u
-        return z.unsqueeze(1).repeat(1, self.dim_X, 1, 1)
-
     def sample_stock_price(self, sample_size):
         # Generate dS_t = S_t * (mu(t) * dt + sigma(t) * dW_t + \int_{\R} eta(t,z) * N(dt, dz))
         sample_data = self.sample(sample_size)
@@ -201,7 +185,6 @@ class Config(object):
         # Initialize S_t, which will be used to record the stock price at each time step
         S = np.zeros((self.time_step_count + 1, sample_size, self.dim_X), dtype=float)
 
-        # Create a copy of X_init
         X = self.X_init.repeat(sample_size, 1)  # Shape: (sample_size, dim_X)
         S[0,:,:] = X.detach().cpu().numpy()  # Initial stock price
 
@@ -234,11 +217,10 @@ SampleData = namedtuple('SampleData', [
 ])
 
 class ClosedFormSolver(object):
-    def __init__(self, x_0_value=1.0):
+    def __init__(self, x_0_value):
         self.config = Config()
         self.x_0_value = x_0_value
 
-        self.valid_size = self.config.valid_size
         self.batch_size = self.config.batch_size
         self.num_iterations = self.config.num_iterations
         self.logging_frequency = self.config.logging_frequency
@@ -312,10 +294,9 @@ class ClosedFormSolver(object):
 
 
         # get the tensor X_0 and do the forward pass with feeback control u_star
-        X_BX = torch.ones(self.batch_size, self.config.dim_X).to(device) * self.x_0_value # NOTE: now with the added x_0_value
-        t = torch.linspace(0, self.config.terminal_time, self.config.time_step_count + 1, dtype=torch.float32, device=device)
-        S = np.zeros((self.config.time_step_count + 1, self.batch_size, self.config.dim_X), dtype=float)
-        S[0,:,:] = X_BX.detach().cpu().numpy()  # Initial stock price
+        X_BX = torch.ones(self.batch_size, self.config.dim_X).to(device) * self.x_0_value 
+        t = np.arange(0, self.config.time_step_count) * self.config.delta_t
+        S = np.zeros((self.config.time_step_count, self.batch_size, self.config.dim_X), dtype=float)
 
         # Take only the first batch_size samples from validation_data
         delta_W = validation_data.delta_W_TBW[:, :self.batch_size, :]
@@ -323,15 +304,14 @@ class ClosedFormSolver(object):
         jump_sizes = validation_data.jump_sizes_BLCX[:self.batch_size, :, :, :]
 
         for i in range(self.config.time_step_count):
-                X_BX = X_BX + self.config.drift(t[i], X_BX, self.u_star(t[i], X_BX)) * self.config.delta_t + \
-                torch.einsum('bxw,bw->bx', self.config.diffusion(t[i], X_BX, self.u_star(t[i], X_BX)), delta_W[i, :, :]) + \
-                self.u_star(t[i], X_BX) * torch.einsum('blc,blcx->bx', jump_mask[i, :, :, :], jump_sizes) + \
-                - self.config.jump_intensity[0] * self.config.jump_size_mean[0] * self.u_star(t[i], X_BX) * self.config.delta_t # NOTE: why with a minus sign? # REPLY: because this compensation term is intended to cancel out the jumps "on average" (over time and probability space)
-
-                S[i+1,:,:] = X_BX.detach().cpu().numpy()
+                S[i,:,:] = X_BX.detach().cpu().numpy()
+                u_BU = self.u_star(t[i], X_BX) 
+                X_BX = X_BX + self.config.drift(t[i], X_BX, u_BU) * self.config.delta_t + \
+                torch.einsum('bxw,bw->bx', self.config.diffusion(t[i], X_BX, u_BU), delta_W[i, :, :]) + \
+                u_BU * torch.einsum('bc,bcx->bx', jump_mask[i, :, 0, :], jump_sizes[:, 0, :, :]) - \
+                u_BU * self.config.jump_intensity[0] * self.config.jump_size_mean[0] * self.config.delta_t
 
         # Plot the wealth plot
-        t = t.detach().cpu().numpy()
         for b in range(self.batch_size):
             plt.plot(t, S[:, b, 0])
         plt.title('Wealth Simulation')
@@ -341,14 +321,17 @@ class ClosedFormSolver(object):
         plt.show()
 
         # get the final value of the portfolio
-        S_T = S[-1, :, :]
+        S_T = X_BX.detach().cpu().numpy()
         # compute the cost functional (S_T - TARGET_MEAN_A)**2 for each of the samples
-        cost_functional = (S_T - self.config.TARGET_MEAN_A)**2
+        cost_functional = 0.5 * (S_T - self.config.TARGET_MEAN_A)**2
         # print("Cost functional: ", cost_functional)
         mean_const_functional = np.mean(cost_functional)
         std_const_functional = np.std(cost_functional)
+        print("Cost functional: ", cost_functional[:,0])
+        print("Mean cost functional: ", mean_const_functional)
+        print("Std cost functional: ", std_const_functional)
         print("Time taken: ", time.time() - start_time)
-        return S, mean_const_functional, std_const_functional
+        return cost_functional
 
 class Solver(object):
     def __init__(self, x_0_value=1.0):
@@ -362,7 +345,7 @@ class Solver(object):
         self.lr_boundaries = self.config.lr_boundaries
         self.x_0_value = x_0_value
 
-        self.model = WholeNet().to(device)  # Move model to the selected device
+        self.model = WholeNet(x_0_value).to(device)  # Move model to the selected device
         print("y_intial: ", self.model.p_init.detach().cpu().numpy())
         print("x_0_value: ", x_0_value)
 
@@ -403,11 +386,11 @@ class Solver(object):
                     validation_history[step, 1] = loss_.item()
                     validation_history[step, 2] = performance_.item()
             else:
-                validation_history[step, 0] = None
+                validation_history[step, 1] = -1
 
             # Gradient descent
             self.optimizer.zero_grad()
-            loss, performance, ratio = self.model(self.config.sample(self.batch_size))
+            loss, performance, ratio = self.model(self.config.sample(self.batch_size), training=True)
             training_history[step, 0] = step
             training_history[step, 1] = loss.item()
             training_history[step, 2] = performance.item()
@@ -417,7 +400,7 @@ class Solver(object):
             self.scheduler.step()
 
         self.training_history = training_history
-        validation_history = validation_history[validation_history[:, 0] != None]  # Remove rows where step is None
+        validation_history = validation_history[validation_history[:, 1] > 0]
         # Plot the graph of loss
         training_history = np.array(training_history)
         plt.plot(training_history[:, 0], training_history[:, 1], label='Training')
@@ -481,7 +464,7 @@ class Solver(object):
 
 class WholeNet(torch.nn.Module):
     """Building the neural network architecture"""
-    def __init__(self):
+    def __init__(self, x_0_value):
         super(WholeNet, self).__init__()
         self.config = Config()
         # Initialize p_init as a parameter
@@ -489,60 +472,54 @@ class WholeNet(torch.nn.Module):
             torch.randn(1, self.config.dim_X, dtype=torch.float32).to(device),  # Ensure float32 and correct device
             requires_grad=True
         )
+        self.x_0_value = x_0_value
         self.q_net = FNNetQ()
         self.u_net = FNNetU()
         self.r_nets = torch.nn.ModuleList()
         for _ in range(self.config.dim_L):
             self.r_nets.append(FNNetR())
 
-    def forward(self, sample, x_0_value=1.0, training=True):
+    def forward(self, sample, training=True):
         delta_W_TBW, jump_times_BLC, jump_mask_TBLC, jump_sizes_BLCX = sample
         sample_size = delta_W_TBW.shape[1]
         jump_counts = jump_mask_TBLC.shape[3]
         t = np.arange(0, self.config.time_step_count) * self.config.delta_t
-        X_BX = self.config.X_init.repeat(sample_size, 1) * x_0_value  # Shape: (sample_size, dim_X)
+        X_BX = torch.ones(sample_size, self.config.dim_X).to(device) * self.x_0_value  # Shape: (sample_size, dim_X)
         p_BX = self.p_init.repeat(sample_size, 1)  # Shape: (sample_size, dim_X)
-        r_jump_BLCX = torch.zeros(sample_size, self.config.dim_L, jump_counts, self.config.dim_X, dtype=torch.float32).to(device)  # Shape: (sample_size, dim_L, jump_counts, dim_X)
-        r_monte_BLMX = torch.zeros(sample_size, self.config.dim_L, self.config.MC_sample_size, self.config.dim_X, dtype=torch.float32).to(device)  # Shape: (sample_size, dim_L, MC_sample_size, dim_X)
-        int_Hu = 0.0  # The constraint term
-        MC_sample_points_BLMX = self.config.MC_sample_points_LMX.repeat(sample_size, 1, 1, 1)  # Shape: (sample_size, dim_L, MC_sample_size, dim_X)
+        int_Hu = torch.zeros(sample_size, self.config.dim_X).to(device)  # The constraint term
+        MC_sample_points_BMX = self.config.generate_MC_sample_points(sample_size)  # Shape: (sample_size, MC_sample_size, dim_X)
+        # closed_form_solver = ClosedFormSolver(self.x_0_value)
 
         for i in range(0, self.config.time_step_count):
             u_BU = self.u_net((t[i], X_BX))   # Shape: (sample_size, dim_u)
+            # u_BU = closed_form_solver.u_star(t[i], X_BX)    # Shape: (sample_size, dim_u)
             q_BXW = self.q_net((t[i], X_BX))   # Shape: (sample_size, dim_X, dim_W)
-            for l in range(self.config.dim_L):
-                # Calculate the r_nets for each jump
-                r_jump_BLCX[:, l, :, :] = self.r_nets[l]((t[i], X_BX, jump_sizes_BLCX[:, l, :, :]))
-                r_monte_BLMX[:, l, :, :] = self.r_nets[l]((t[i], X_BX, MC_sample_points_BLMX[:, l, :, :]))
+            r_jump_BCX = self.r_nets[0]((t[i], X_BX, jump_sizes_BLCX[:, 0, :, :]))
+            r_monte_BMX = self.r_nets[0]((t[i], X_BX, MC_sample_points_BMX))
 
 
             Hu = torch.einsum('bjn,bj->bn', self.config.drift_u(t[i], X_BX, u_BU), p_BX) + \
                 torch.einsum('bjkn,bjk->bn', self.config.diffusion_u(t[i], X_BX, u_BU), q_BXW)
-
-            for l in range(self.config.dim_L):
-                Hu = Hu + self.config.jump_intensity[l] * torch.mean(torch.einsum('bjmu,bjm->bu', self.config.eta_u(t[i], X_BX, u_BU, MC_sample_points_BLMX[:, l, :, :]), r_monte_BLMX[:, l, :, :]), dim=1)
-
+            Hu = Hu + self.config.jump_intensity[0] * torch.mean(MC_sample_points_BMX * r_monte_BMX, dim=1)
             int_Hu = int_Hu + Hu**2 * self.config.delta_t # NOTE: this is where the square was missing!
 
             # Update p
             Hx = torch.einsum('bjn,bj->bn', self.config.drift_x(t[i], X_BX, u_BU), p_BX)
             p_BX = p_BX - Hx * self.config.delta_t + torch.einsum('bxw,bw->bx', q_BXW, delta_W_TBW[i, :, :])
-            for l in range(self.config.dim_L):
-                p_BX = p_BX + torch.einsum('bc,bcx->bx', jump_mask_TBLC[i, :, l, :], r_jump_BLCX[:, l, :, :])
-                p_BX = p_BX - self.config.jump_intensity[l] * torch.mean(r_monte_BLMX[:, l, :, :], dim=1) * self.config.delta_t
+            p_BX = p_BX + torch.einsum('bc,bcx->bx', jump_mask_TBLC[i, :, 0, :], r_jump_BCX)
+            p_BX = p_BX - self.config.jump_intensity[0] * torch.mean(r_monte_BMX, dim=1) * self.config.delta_t
 
             # Update X
             X_BX = X_BX + self.config.drift(t[i], X_BX, u_BU) * self.config.delta_t + \
-                torch.einsum('bxw,bw->bx', self.config.diffusion(t[i], X_BX, u_BU), delta_W_TBW[i, :, :])
-            for l in range(self.config.dim_L):
-                X_BX = X_BX + u_BU * torch.einsum('bc,bcx->bx', jump_mask_TBLC[i, :, l, :], jump_sizes_BLCX[:, l, :, :])
-                X_BX = X_BX - self.config.jump_intensity[l] * (np.exp(self.config.log_normal_mu[l] + 0.5 * self.config.log_normal_sigma[l] ** 2) - 1)* u_BU * self.config.delta_t
+                torch.einsum('bxw,bw->bx', self.config.diffusion(t[i], X_BX, u_BU), delta_W_TBW[i, :, :]) + \
+                u_BU * torch.einsum('bc,bcx->bx', jump_mask_TBLC[i, :, 0, :], jump_sizes_BLCX[:, 0, :, :]) - \
+                u_BU * self.config.jump_intensity[0] * self.config.jump_size_mean[0] * self.config.delta_t
+        
+        performance = torch.mean(-0.5 * (X_BX - self.config.TARGET_MEAN_A)**2)
 
         terminal_value_loss = p_BX - self.config.g_x(X_BX)
-        loss = torch.mean(torch.sum(terminal_value_loss**2, 1, keepdim=True) + LAMBDA * int_Hu)
+        loss =  torch.mean(torch.sum(terminal_value_loss**2, 1, keepdim=True)) + eta_1 * torch.mean(int_Hu) - eta_2 * performance
         ratio = torch.mean(torch.sum(terminal_value_loss**2, 1, keepdim=True)) / torch.mean(int_Hu)
-
-        performance = torch.mean(self.config.g(X_BX))
 
         return loss, performance, ratio
 
@@ -551,9 +528,7 @@ class FNNetQ(torch.nn.Module):
     def __init__(self):
         super(FNNetQ, self).__init__()
         self.config = Config()
-        num_hiddens = [self.config.dim_X + 10,
-                       self.config.dim_X * 2 + 10,
-                       self.config.dim_X * self.config.dim_W + 10]
+        num_hiddens = [25, 25, 25]
 
         # Create layer lists
         self.bn_layers = torch.nn.ModuleList([
@@ -621,7 +596,7 @@ class FNNetU(torch.nn.Module):
     def __init__(self):
         super(FNNetU, self).__init__()
         self.config = Config()
-        num_hiddens = [self.config.dim_X+10, self.config.dim_X+10, self.config.dim_X+10]
+        num_hiddens = [25, 25, 25]
 
         # Create layer lists
         self.bn_layers = torch.nn.ModuleList([
@@ -691,9 +666,7 @@ class FNNetR(torch.nn.Module):
     def __init__(self):
         super(FNNetR, self).__init__()
         self.config = Config()
-        num_hiddens = [self.config.dim_X * 2 + 10,
-                       self.config.dim_X * 4 + 10,
-                       self.config.dim_X * 2 + 10]
+        num_hiddens = [25, 25, 25]
 
         # Create layer lists
         self.bn_layers = torch.nn.ModuleList([
@@ -780,12 +753,15 @@ def main():
     # config.sample_stock_price(sample_size=10)
     x_0_values = np.array([0.7, 0.8, 0.9, 1.0, 1.1, 1.2])
     V_for_different_x0 = []
+    closed_form_V_for_different_x0 = []
     std_for_different_x0 = []
     for x_0 in x_0_values:
         print('\n\n\n x_0: ', x_0)
         # Initialize the solver with the initial value of X0
         solver = Solver(x_0_value=x_0)
         closed_form_solver = ClosedFormSolver(x_0_value=x_0)
+        closed_form_cost_functional = closed_form_solver.get_solution()
+        closed_form_V_for_different_x0.append(closed_form_cost_functional.mean())
         solver.train()
         # generate the trajectory
         trajectory = solver.generate_trajectoy(256, x_0_value=x_0)
@@ -795,13 +771,23 @@ def main():
 
         # print('Trajectory shape after the plot: ', trajectory.shape)
         # compute the cost functional for each of the trajectories. get the mean and std
-        cost_functional = np.mean(np.sum((trajectory - config.TARGET_MEAN_A) ** 2, axis=2), axis=0)
+        cost_functional = 0.5 * (trajectory[-1,:,0] - config.TARGET_MEAN_A) ** 2
         print("cost finctional shape: ", cost_functional.shape)
-        print('Cost functional: ', cost_functional)
+        print('Cost functional of learned control: ', cost_functional)
         print('Mean: ', np.mean(cost_functional))
         print('Std: ', np.std(cost_functional))
         V_for_different_x0.append(np.mean(cost_functional))
         std_for_different_x0.append(np.std(cost_functional))
+
+        # Make a histogram showing the distribution of cost_functional and closed_form_cost_functional
+        bins = np.linspace(0, 0.25, 50)  # 50 bins between 0 and 0.25
+        plt.figure(figsize=(8, 6))
+        plt.hist(cost_functional, bins=bins, alpha=0.5, label='Learned Control', density=True)
+        plt.hist(closed_form_cost_functional, bins=bins, alpha=0.5, label='Optimal Control', density=True)
+        plt.title('Distribution of Cost')
+        plt.legend()
+        plt.grid()
+        plt.show()
 
         # Make a heatmap showing the difference between FNNetU and closed_form_solver.u_star
         t_values = np.linspace(0, config.terminal_time, 256)
@@ -837,7 +823,7 @@ def main():
     plt.grid()
     plt.show()
     print(" trying the better time scaling")
-    print(f" num_iterations = 200 ,  LAMBDA =  {LAMBDA}, B = 512, A = {config.TARGET_MEAN_A}")
+    print(f" num_iterations = 200 ,  eta_2 =  {eta_2}, B = 512, A = {config.TARGET_MEAN_A}")
     print("Cost Functional for different x_0 values:")
     print("Mean: \n", V_for_different_x0)
     print("Std: \n", std_for_different_x0)
