@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 LAMBDA = 0.05 # was 0.05
 MC_SAM_SIZE = 250
 BATCH_SIZE = 256
-NUM_ITERATIONS = 3000
+NUM_ITERATIONS = 2000
 LOGGING_FREQUENCY = 100
 TERMINAL_TIME = 1.0
 TICKS_PER_SECOND = 250
@@ -440,8 +440,8 @@ class Config(object):
         self.jump_Mean_X = torch.zeros(self.dim_X, dtype=torch.float32, device=device)  # The mean of the jump sizes
         self.jump_size_distribution = torch.distributions.MultivariateNormal(self.jump_Mean_X, self.jump_Covariance_XX)  # The jump size distribution
 
-        self.Lambda_1 = 0.0 # Jump intensity coefficient 1
-        self.Lambda_2 = 2.00 # Jump intensity coefficient 2
+        self.Lambda_1 = 0.25 # Jump intensity coefficient 1
+        self.Lambda_2 = 0.00 # Jump intensity coefficient 2
         # Setup 1: Lambda_1 = 0.00 , Lambda_2 = 2.00
         # Alternative setup (constant jump intensity): Lambda_1 = 0.25, Lambda_2 = 0.00
 
@@ -474,7 +474,7 @@ class Config(object):
         plt.grid()
         plt.show()
 
-        int_h = np.trapz(self.h_closed_form, np.arange(0, self.time_step_count + 1) * self.delta_t)
+        int_h = np.trapezoid(self.h_closed_form, np.arange(0, self.time_step_count + 1) * self.delta_t)
         self.f_0 = 0.5 * (torch.trace(self.Sigma_XW @ self.Sigma_XW.T) + self.Lambda_1 * self.zeta) * \
                 torch.tensor(int_h, dtype=torch.float32, device=device)
 

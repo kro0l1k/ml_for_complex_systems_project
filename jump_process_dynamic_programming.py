@@ -28,8 +28,8 @@ class Config(object):
         # training config: 
         self.valid_size = 256
         self.batch_size = 256 # NOTE: how big should the batch size be? 
-        self.num_iterations = 1 #1000 # NOTE : SMALLER FOR TESTING. CHANGE BACK TO 5000
-        self.logging_frequency = 10 #100 # NOTE: SMALLER FOR TESTING. CHANGE BACK TO 2000
+        self.num_iterations = 1000 #1000 # NOTE : SMALLER FOR TESTING. CHANGE BACK TO 5000
+        self.logging_frequency = 100 #100 # NOTE: SMALLER FOR TESTING. CHANGE BACK TO 2000
         self.lr_values = [0.1, 0.01, 0.005]
 
         self.lr_boundaries = [int(0.2 * self.num_iterations), int(0.8 * self.num_iterations)] 
@@ -53,14 +53,14 @@ class Config(object):
 
         # The terminal time in years
         self.terminal_time = 1.0
-        self.tics_per_unit_of_time = 100  # The number of tics for one year, e.g. 100 tics for one year means 1 tic is 1/100 year
+        self.tics_per_unit_of_time = 250  # The number of tics for one year, e.g. 100 tics for one year means 1 tic is 1/100 year
         
         # Roughly the number of trading days
         self.time_step_count = math.floor(self.terminal_time * self.tics_per_unit_of_time)  # 20 trading days in a month. keep it small for testing.
         # print(f"Time step count: {self.time_step_count}")
         self.delta_t = float(self.terminal_time) / self.time_step_count
         # print(f"Delta t: {self.delta_t}")
-        self.MC_sample_size = 100  # The integer M
+        self.MC_sample_size = 256  # The integer M
         # Generate sample points for integration with respect to nu 
         MC_sample_points_LMX = np.random.lognormal(mean=self.log_normal_mu[0], sigma=self.log_normal_sigma[0], size=(self.dim_L, self.MC_sample_size, self.dim_X)) - 1
         self.MC_sample_points_LMX = torch.tensor(MC_sample_points_LMX, dtype=torch.float32).to(device)
@@ -327,7 +327,7 @@ class ClosedFormSolver(object):
                 X_BX = X_BX + self.config.drift(t[i], X_BX, self.u_star(t[i], X_BX)) * self.config.delta_t + \
                 torch.einsum('bxw,bw->bx', self.config.diffusion(t[i], X_BX, self.u_star(t[i], X_BX)), delta_W[i, :, :]) + \
                 self.u_star(t[i], X_BX) * torch.einsum('blc,blcx->bx', jump_mask[i, :, :, :], jump_sizes) + \
-                - self.config.jump_intensity[0] * self.config.jump_size_mean[0] * self.u_star(t[i], X_BX) * self.config.delta_t # NOTE: why with a minus sign? # REPLY: because this compensation term is intended to cancel out the jumps "on average" (over time and probability space)
+                - self.config.jump_intensity[0] * self.config.jump_size_mean[0] * self.u_star(t[i], X_BX) * self.config.delta_t 
                 
                 S[i+1,:,:] = X_BX.detach().cpu().numpy()
         
@@ -393,13 +393,12 @@ class Solver(object):
             
             # Calculate validation loss and log it
             if step % self.logging_frequency == 0:
-                with torch.no_grad():
-                    loss, performance, ratio = self.model(validation_data)
-                    p_init_euclidean = np.linalg.norm(self.model.p_init.detach().cpu().numpy())
-                    elapsed_time = time.time() - start_time
-                    training_history.append([step, performance.item(), p_init_euclidean, loss.item(), ratio.item()])
-                    print(f"step: {step:5d}, loss: {loss.item():.4e}, ||Y0||: {p_init_euclidean:.4e}, performance: {performance.item():.4e}, "
-                          f"elapsed time: {int(elapsed_time):3d}, ratio: {ratio.item():.4e}")
+                loss, performance, ratio = self.model(validation_data)
+                p_init_euclidean = np.linalg.norm(self.model.p_init.detach().cpu().numpy())
+                elapsed_time = time.time() - start_time
+                training_history.append([step, performance.item(), p_init_euclidean, loss.item(), ratio.item()])
+                print(f"step: {step:5d}, loss: {loss.item():.4e}, ||Y0||: {p_init_euclidean:.4e}, performance: {performance.item():.4e}, "
+                        f"elapsed time: {int(elapsed_time):3d}, ratio: {ratio.item():.4e}")
             
             # Gradient descent
             self.optimizer.zero_grad()
@@ -482,9 +481,20 @@ class WholeNet(torch.nn.Module):
             # Compute value of q according to the DP relation
             u_BU = self.u_net((t[i], X_BX))   # Shape: (sample_size, dim_u)
             X_BX = X_BX.requires_grad_(True)
-            V_xx_BXBX = torch.autograd.functional.jacobian(lambda input: self.v_x_net((t[i], input)), X_BX)
-            V_xx_XXB = torch.diagonal(V_xx_BXBX, dim1=0, dim2=2)
-            q_BXW = torch.einsum('xjb,bjw->bxw', V_xx_XXB, self.config.diffusion(t[i], X_BX, u_BU))
+            V_x_BX = self.v_x_net((t[i], X_BX))
+            diffusion_BXW = self.config.diffusion(t[i], X_BX.detach(), u_BU.detach())
+
+            q_list = []
+            for w_idx in range(self.config.dim_W):
+                hvp = torch.autograd.grad(
+                    outputs=V_x_BX,
+                    inputs=X_BX,
+                    grad_outputs=diffusion_BXW[:, :, w_idx],
+                    retain_graph=True,
+                    create_graph=True,
+                )[0]
+                q_list.append(hvp)
+            q_BXW = torch.stack(q_list, dim=2)
 
             # Compute value of r according to the DP relation
             for l in range(self.config.dim_L):

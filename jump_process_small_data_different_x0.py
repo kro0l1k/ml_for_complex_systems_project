@@ -5,12 +5,12 @@ import math
 from collections import namedtuple
 import matplotlib.pyplot as plt
 
-LAMBDA = 0.001 # was 0.05
+LAMBDA = 0.05 # was 0.05
 
 # Set default tensor type to float
 torch.set_default_dtype(torch.float32)
 
-# Check for available devices 
+# Check for available devices
 device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
 print(f"Using device: {device}")
 
@@ -23,18 +23,18 @@ class Config(object):
         self.dim_X = 1              # The integer n
         self.dim_u = 1              # The dimension of U
         self.dim_W = 1              # The integer m
-        self.dim_L = 1              # The integer l 
-        
+        self.dim_L = 1              # The integer l
+
         ###
-        # training config: 
+        # training config:
         self.valid_size = 512
-        self.batch_size = 256 # NOTE: how big should the batch size be? 
-        self.MC_sample_size = 10  # The integer M
-        self.num_iterations = 1
-        self.logging_frequency = 100 
+        self.batch_size = 256 # NOTE: how big should the batch size be?
+        self.MC_sample_size = 256  # The integer M
+        self.num_iterations = 1000
+        self.logging_frequency = 100
         self.lr_values = [0.1, 0.01, 0.005]
 
-        self.lr_boundaries = [int(0.2 * self.num_iterations), int(0.8 * self.num_iterations)] 
+        self.lr_boundaries = [int(0.2 * self.num_iterations), int(0.8 * self.num_iterations)]
         ###
         self.TARGET_MEAN_A = 1.1
 
@@ -43,8 +43,8 @@ class Config(object):
             print('Warning: The dimension of L is not 1, which may cause problems in the code.')
 
         self.X_init = torch.ones(self.dim_X, dtype=torch.float32, device=device) # The initial value of X at time 0
-        
-        self.jump_intensity = np.array([1,  # Jumps per year in average, 
+
+        self.jump_intensity = np.array([1,  # Jumps per year in average,
                                         ], dtype=float) # The l-dimensional vector lambda
         self.log_normal_mu = np.array([-0.05,
                                         ], dtype=float)
@@ -55,14 +55,14 @@ class Config(object):
 
         # The terminal time in years
         self.terminal_time = 1.0
-        self.tics_per_unit_of_time = 400  # The number of tics for one year, e.g. 100 tics for one year means 1 tic is 1/100 year
-        
+        self.tics_per_unit_of_time = 250  # The number of tics for one year, e.g. 100 tics for one year means 1 tic is 1/100 year
+
         # Roughly the number of trading days
         self.time_step_count = math.floor(self.terminal_time * self.tics_per_unit_of_time)  # 20 trading days in a month. keep it small for testing.
         # print(f"Time step count: {self.time_step_count}")
         self.delta_t = float(self.terminal_time) / self.time_step_count
         # print(f"Delta t: {self.delta_t}")
-        # Generate sample points for integration with respect to nu 
+        # Generate sample points for integration with respect to nu
         MC_sample_points_LMX = np.random.lognormal(mean=self.log_normal_mu[0], sigma=self.log_normal_sigma[0], size=(self.dim_L, self.MC_sample_size, self.dim_X)) - 1
         self.MC_sample_points_LMX = torch.tensor(MC_sample_points_LMX, dtype=torch.float32).to(device)
 
@@ -72,7 +72,7 @@ class Config(object):
         # jump_counts is of shape (sample_size, dim_L)
         # Each entry in jump_counts[:,k-1] is sampled from a Poisson distribution with intensity self.jump_intensity[k-1]
         jump_counts = np.random.poisson(self.jump_intensity * self.terminal_time, size=(sample_size, self.dim_L))
-        # jump_counts = np.zeros_like(jump_counts, dtype=int) 
+        # jump_counts = np.zeros_like(jump_counts, dtype=int)
         # print('jump_counts: ', jump_counts.shape)
         jump_times_BLC = np.random.uniform(0, self.terminal_time, size=(sample_size, self.dim_L, np.max(jump_counts)))
 
@@ -91,13 +91,13 @@ class Config(object):
         jump_sizes_BLCX = np.zeros((sample_size, self.dim_L, np.max(jump_counts), self.dim_X), dtype=float)
         for l in range(self.dim_L):
            jump_sizes_BLCX[:, l, :, :] = np.random.lognormal(mean=self.log_normal_mu[l], sigma=self.log_normal_sigma[l], size=(sample_size, np.max(jump_counts), self.dim_X)) - 1
-            
+
 
         return SampleData(delta_W_TBW   = torch.tensor(delta_W_TBW,    dtype=torch.float32).to(device),
                           jump_times_BLC = torch.tensor(jump_times_BLC, dtype=torch.float32).to(device),
                           jump_mask_TBLC  = torch.tensor(jump_mask_TBLC,  dtype=torch.float32).to(device),
                           jump_sizes_BLCX = torch.tensor(jump_sizes_BLCX, dtype=torch.float32).to(device),)
-        
+
     def a_in_cost(self):
         # the constant a in the equivalent problem formulation: sup E [x(T - a)**2]
         # output shape: scalar
@@ -106,11 +106,11 @@ class Config(object):
     def f(self, t, x, u):
         # Output shape: (batch_size, 1)
         return torch.zeros(x.shape[0], 1, dtype=torch.float32).to(x.device)
-    
+
     def f_x(self, t, x, u):
         # Output shape: (batch_size, dim_X)
         return torch.zeros(x.shape[0], self.dim_X, dtype=torch.float32).to(x.device)
-    
+
     def f_u(self, t, x, u):
         # Output shape: (batch_size, dim_u)
         return torch.zeros(x.shape[0], self.dim_u, dtype=torch.float32).to(x.device)
@@ -122,15 +122,15 @@ class Config(object):
     def g_x(self, x):
         # Output shape: (batch_size, dim_X)
         return - x + self.a_in_cost()
-    
+
     def rho(self, t): # Risk-free interest rate
         # Output shape: scalar
         return 0.05
-    
+
     def mu(self, t): # Expected return of the stock
         # Output shape: scalar
         return 0.1
-    
+
     def sigma(self, t): # Volatility of the stock
         # Output shape: scalar
         return 0.2
@@ -139,14 +139,14 @@ class Config(object):
         # Output shape: (batch_size, dim_X)
         # b(t, x, u) = rho(t) * x + (mu(t) - rho(t)) * u
         return self.rho(t) * x + (self.mu(t) - self.rho(t)) * u
-    
-    def drift_x(self, t, x, u): 
+
+    def drift_x(self, t, x, u):
         # Drift coefficient in front of dt
         # Partial derivatives of each component of drift coefficient with respect to x
         # Output shape: (batch_size, dim_X, dim_X)
         # drift_x(t, x, u)[b, j, :] = \partial drift^j(t, x, u) / \partial x
         return self.rho(t) * torch.ones(x.shape[0], self.dim_X, self.dim_X, dtype=torch.float32).to(x.device)
-    
+
     def drift_u(self, t, x, u):
         # Partial derivatives of each component of drift coefficient with respect to u
         # Output shape: (batch_size, dim_X, dim_u)
@@ -159,34 +159,34 @@ class Config(object):
         # Output shape: (batch_size, dim_X, dim_W)
         # diffusion(t) = 0.2 * u
         return self.sigma(t) * u.unsqueeze(2).repeat(1, 1, self.dim_W)
-    
-    def diffusion_x(self, t, x, u): 
+
+    def diffusion_x(self, t, x, u):
         # Partial derivatives of each component of diffusion coefficient with respect to x
         # Input shape of u: (batch_size, dim_X)
         # Output shape: (batch_size, dim_X, dim_W, dim_X)
         # diffusion_x(t, x, u)[b, j, k, :] = \partial diffusion^{j,k}(t, x, u) / \partial x
         return torch.zeros(x.shape[0], self.dim_X, self.dim_W, self.dim_X, dtype=torch.float32).to(x.device)
-    
+
     def diffusion_u(self, t, x, u):
         # Partial derivatives of each component of diffusion coefficient with respect to u
         # Input shape of u: (batch_size, dim_X)
         # Output shape: (batch_size, dim_X, dim_W, dim_u)
         # diffusion_u(t, x, u)[b, j, k, :] = \partial diffusion^{j,k}(t, x, u) / \partial u
         return self.sigma(t) * torch.ones(x.shape[0], self.dim_X, self.dim_W, self.dim_u, dtype=torch.float32).to(x.device)
-    
+
     def eta(self, t, x, u, z):
         # Shape of u: (batch_size, dim_X)
         # Shape of z: (batch_size, dim_L)
         # eta(u, z) = u * transpose(z)
         # Output shape: (batch_size, dim_X, dim_L)
         return u.unsqueeze(2) * z.unsqueeze(1)
-    
+
     def eta_x(self, t, x, u, z):
         # Partial derivatives of each component of eta with respect to x
         # Output shape: (batch_size, dim_X, dim_L, dim_X)
         # eta_x(t, x, u, z)[b, j, k, :] = \partial eta^{j,k}(t, x, u, z) / \partial x
         return torch.zeros(x.shape[0], self.dim_X, self.dim_L, self.dim_X, dtype=torch.float32).to(x.device)
-    
+
     def eta_u(self, t, x, u, z):
         # Partial derivatives of each component of eta with respect to u
         # Output shape: (batch_size, dim_X, dim_L, dim_u)
@@ -200,7 +200,7 @@ class Config(object):
 
         # Initialize S_t, which will be used to record the stock price at each time step
         S = np.zeros((self.time_step_count + 1, sample_size, self.dim_X), dtype=float)
-        
+
         # Create a copy of X_init
         X = self.X_init.repeat(sample_size, 1)  # Shape: (sample_size, dim_X)
         S[0,:,:] = X.detach().cpu().numpy()  # Initial stock price
@@ -211,9 +211,9 @@ class Config(object):
                 torch.einsum('blc,blcx->bx', sample_data.jump_mask_TBLC[i, :, :, :], sample_data.jump_sizes_BLCX) + \
                 - self.jump_intensity[0] * self.jump_size_mean[0] * X * self.delta_t
                 # S_t[i, :] * sample_data.jump_mask_TBLC[i, 0, :, :] * sample_data.jump_sizes_BLCX[0, :, :, :] * sample_data.jump_mask_TBLC[i, 0, :, :].unsqueeze(2)
-                
+
                 S[i+1,:,:] = X.detach().cpu().numpy()
-            
+
         # Plot the stock price
         t = t.detach().cpu().numpy()
         for b in range(sample_size):
@@ -224,7 +224,7 @@ class Config(object):
         plt.grid()
         plt.show()
         return S
-    
+
 # A simple object to contain the sample data
 SampleData = namedtuple('SampleData', [
     'delta_W_TBW',    # torch.Tensor, shape (time_step_count, batch_size, dim_W)
@@ -237,7 +237,7 @@ class ClosedFormSolver(object):
     def __init__(self, x_0_value=1.0):
         self.config = Config()
         self.x_0_value = x_0_value
-          
+
         self.valid_size = self.config.valid_size
         self.batch_size = self.config.batch_size
         self.num_iterations = self.config.num_iterations
@@ -247,26 +247,26 @@ class ClosedFormSolver(object):
         self.x_0_value = x_0_value
 
     def Lambda(self, t):
-        return torch.tensor(self.config.sigma(t)**2 + self.config.jump_intensity * self.config.jump_size_mean[0] ** 2 + self.config.jump_intensity * self.config.jump_size_std[0] ** 2, 
+        return torch.tensor(self.config.sigma(t)**2 + self.config.jump_intensity * self.config.jump_size_mean[0] ** 2 + self.config.jump_intensity * self.config.jump_size_std[0] ** 2,
                             dtype=torch.float32, device=device)
-    def phi(self, t): 
-        I_phi = (self.config.mu(t) - self.config.rho(t)) **2 / self.Lambda(t) - 2 * self.config.rho(t) 
+    def phi(self, t):
+        I_phi = (self.config.mu(t) - self.config.rho(t)) **2 / self.Lambda(t) - 2 * self.config.rho(t)
         I_phi = torch.tensor(I_phi, dtype=torch.float32, device=device)
         return -1.0 * torch.exp(I_phi * (torch.tensor(self.config.terminal_time, dtype=torch.float32, device=device) - t))
-    
+
     def psi(self, t):
-        I_psi = (self.config.mu(t) - self.config.rho(t)) **2 / self.Lambda(t) - self.config.rho(t) 
+        I_psi = (self.config.mu(t) - self.config.rho(t)) **2 / self.Lambda(t) - self.config.rho(t)
         I_psi = torch.tensor(I_psi, dtype=torch.float32, device=device)
         return self.config.a_in_cost() * torch.exp(I_psi * (self.config.terminal_time - t))
-    
+
     def u_star(self, t_1, X_BX):
-        # t is a scalar, 
+        # t is a scalar,
         # X is a tensor of shape (batch_size, dim_X)
         # output shape: (batch_size, dim_X)
         if not isinstance(t_1, torch.Tensor):
             t_1 = torch.tensor(t_1, dtype=torch.float32, device=device)
         # the mistake was here!
-        ustar = (self.config.rho(t_1) - self.config.mu(t_1)) * (self.phi(t_1) * X_BX + self.psi(t_1)) / (self.phi(t_1) * self.Lambda(t_1)) 
+        ustar = (self.config.rho(t_1) - self.config.mu(t_1)) * (self.phi(t_1) * X_BX + self.psi(t_1)) / (self.phi(t_1) * self.Lambda(t_1))
         return ustar
     def get_solution(self):
         """
@@ -275,10 +275,10 @@ class ClosedFormSolver(object):
         start_time = time.time()
         training_history = []
         validation_data = self.config.sample(self.batch_size)
-        
+
         # compute Lambda(t) = sigma(t)**2 + mean_jump ** 2 + std_jump ** 2
         print("Lambda(0): ", self.Lambda(0).item())
-        
+
         def inspect_the_feedback_law():
             # Inspect the feedback law u_star(t, X_BX)
             # Define time steps and x values to inspect
@@ -291,7 +291,7 @@ class ClosedFormSolver(object):
                 u_star_at_t = []
                 for x in x_values:
                     X_BX = torch.full((1, self.config.dim_X), x, dtype=torch.float32, device=device)
-                    
+
                     # print(" ustar shape: ", u_star(t, X_BX).shape)
                     u_star_at_t.append(self.u_star(t, X_BX).detach().cpu().numpy()[0,0])
                     u_star_values.append(u_star_at_t)
@@ -307,29 +307,29 @@ class ClosedFormSolver(object):
 
             plt.tight_layout()
             plt.show()
-            
+
         # inspect_the_feedback_law() # NOTE: uncomment to see V(t,x) and u_star(t,x)
-        
-        
+
+
         # get the tensor X_0 and do the forward pass with feeback control u_star
         X_BX = torch.ones(self.batch_size, self.config.dim_X).to(device) * self.x_0_value # NOTE: now with the added x_0_value
         t = torch.linspace(0, self.config.terminal_time, self.config.time_step_count + 1, dtype=torch.float32, device=device)
         S = np.zeros((self.config.time_step_count + 1, self.batch_size, self.config.dim_X), dtype=float)
         S[0,:,:] = X_BX.detach().cpu().numpy()  # Initial stock price
-        
+
         # Take only the first batch_size samples from validation_data
         delta_W = validation_data.delta_W_TBW[:, :self.batch_size, :]
         jump_mask = validation_data.jump_mask_TBLC[:, :self.batch_size, :, :]
         jump_sizes = validation_data.jump_sizes_BLCX[:self.batch_size, :, :, :]
-        
+
         for i in range(self.config.time_step_count):
                 X_BX = X_BX + self.config.drift(t[i], X_BX, self.u_star(t[i], X_BX)) * self.config.delta_t + \
                 torch.einsum('bxw,bw->bx', self.config.diffusion(t[i], X_BX, self.u_star(t[i], X_BX)), delta_W[i, :, :]) + \
                 self.u_star(t[i], X_BX) * torch.einsum('blc,blcx->bx', jump_mask[i, :, :, :], jump_sizes) + \
                 - self.config.jump_intensity[0] * self.config.jump_size_mean[0] * self.u_star(t[i], X_BX) * self.config.delta_t # NOTE: why with a minus sign? # REPLY: because this compensation term is intended to cancel out the jumps "on average" (over time and probability space)
-                
+
                 S[i+1,:,:] = X_BX.detach().cpu().numpy()
-        
+
         # Plot the wealth plot
         t = t.detach().cpu().numpy()
         for b in range(self.batch_size):
@@ -339,7 +339,7 @@ class ClosedFormSolver(object):
         plt.ylabel('$S_1(t)$')
         plt.grid()
         plt.show()
-        
+
         # get the final value of the portfolio
         S_T = S[-1, :, :]
         # compute the cost functional (S_T - TARGET_MEAN_A)**2 for each of the samples
@@ -349,11 +349,11 @@ class ClosedFormSolver(object):
         std_const_functional = np.std(cost_functional)
         print("Time taken: ", time.time() - start_time)
         return S, mean_const_functional, std_const_functional
-    
+
 class Solver(object):
     def __init__(self, x_0_value=1.0):
         self.config = Config()
-        
+
         self.valid_size = self.config.valid_size
         self.batch_size = self.config.batch_size
         self.num_iterations = self.config.num_iterations
@@ -365,57 +365,86 @@ class Solver(object):
         self.model = WholeNet().to(device)  # Move model to the selected device
         print("y_intial: ", self.model.p_init.detach().cpu().numpy())
         print("x_0_value: ", x_0_value)
-        
+
         # PyTorch doesn't have PiecewiseConstantDecay directly, so we'll use a custom scheduler
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr_values[0], eps=1e-8)
         self.scheduler = torch.optim.lr_scheduler.MultiStepLR(
-            self.optimizer, 
-            milestones=self.lr_boundaries, 
+            self.optimizer,
+            milestones=self.lr_boundaries,
             gamma=1.0  # No decrease since we manually set the learning rates
         )
-        
+
         # Custom adjustment for learning rates at boundaries
         self.original_lr = self.lr_values[0]
 
     def train(self):
         """Training the model"""
         start_time = time.time()
-        training_history = []
+        training_history = np.zeros((self.num_iterations+1, 3))  # Store step, loss, performance
         validation_data = self.config.sample(self.valid_size)
-        
+        validation_history = np.zeros((self.num_iterations+1, 3))  # Store step, loss, performance
+
         for step in range(self.num_iterations+1):
             # Custom learning rate adjustment
             if step in self.lr_boundaries:
                 idx = self.lr_boundaries.index(step) + 1
                 for param_group in self.optimizer.param_groups:
                     param_group['lr'] = self.lr_values[idx]
-            
+
             # Calculate validation loss and log it
             if step % self.logging_frequency == 0:
                 with torch.no_grad():
-                    loss, performance, ratio = self.model(validation_data)
+                    loss_, performance_, ratio_ = self.model(validation_data)
                     p_init_euclidean = np.linalg.norm(self.model.p_init.detach().cpu().numpy())
                     elapsed_time = time.time() - start_time
-                    training_history.append([step, performance.item(), p_init_euclidean, loss.item(), ratio.item()])
-                    print(f"step: {step:5d}, loss: {loss.item():.4e}, ||Y0||: {p_init_euclidean:.4e}, performance: {performance.item():.4e}, "
-                          f"elapsed time: {int(elapsed_time):3d}, ratio: {ratio.item():.4e}")
-            
+                    print(f"step: {step:5d}, loss: {loss_.item():.4e}, ||Y0||: {p_init_euclidean:.4e}, cost functional: {-performance_.item():.4e}, "
+                          f"elapsed time: {int(elapsed_time):3d}, ratio: {ratio_.item():.4e}")
+                    validation_history[step, 0] = step
+                    validation_history[step, 1] = loss_.item()
+                    validation_history[step, 2] = performance_.item()
+            else:
+                validation_history[step, 0] = None
+
             # Gradient descent
             self.optimizer.zero_grad()
-            loss, _, _ = self.model(self.config.sample(self.batch_size))
+            loss, performance, ratio = self.model(self.config.sample(self.batch_size))
+            training_history[step, 0] = step
+            training_history[step, 1] = loss.item()
+            training_history[step, 2] = performance.item()
             loss.backward()
             self.optimizer.step()
 
             self.scheduler.step()
-            self.training_history = training_history
-        
+
+        self.training_history = training_history
+        validation_history = validation_history[validation_history[:, 0] != None]  # Remove rows where step is None
+        # Plot the graph of loss
+        training_history = np.array(training_history)
+        plt.plot(training_history[:, 0], training_history[:, 1], label='Training')
+        plt.plot(validation_history[:, 0], validation_history[:, 1], label='Validation')
+        plt.xlabel('Epoch')
+        plt.ylabel('Loss')
+        plt.yscale('log')
+        plt.legend()
+        plt.grid()
+        plt.show()
+
+        # Plot the graph of cost functional
+        plt.plot(training_history[:, 0], -training_history[:, 2], label='Training')
+        plt.plot(validation_history[:, 0], -validation_history[:, 2], label='Validation')
+        plt.xlabel('Epoch')
+        plt.ylabel('Cost')
+        plt.legend()
+        plt.grid()
+        plt.show()
+
     def generate_trajectoy(self, sample_size, x_0_value = 1.0):
         """Generate the trajectory of the model. start from the initial value of X0 and apply the control generated by the FFNetU"""
-        
+
         # Generate sample data for simulation
         sample_data = self.config.sample(sample_size)
         delta_W_TBW, _, jump_mask_TBLC, jump_sizes_BLCX = sample_data
-        
+
         X_BX = self.config.X_init.repeat(sample_size, 1) * x_0_value  # Shape: (sample_size, dim_X)
         trajectory = []
         trajectory.append(X_BX.detach().cpu().numpy())  # Store initial state
@@ -423,7 +452,7 @@ class Solver(object):
 
         for i in range(0, self.config.time_step_count):
             u_BU = self.model.u_net((t[i], X_BX))  # Access u_net through self.model
-            
+
             X_BX = X_BX + self.config.drift(t[i], X_BX, u_BU) * self.config.delta_t + \
                 torch.einsum('bxw,bw->bx', self.config.diffusion(t[i], X_BX, u_BU), delta_W_TBW[i, :, :])
             for l in range(self.config.dim_L):
@@ -433,23 +462,23 @@ class Solver(object):
             trajectory.append(X_BX.detach().cpu().numpy())
 
         return np.array(trajectory)
-    
+
     def plot_trajectory(self, trajectory):
         """Plot the trajectory of the model"""
         # Use trajectory.shape[0] to ensure t has the right number of points
         t = np.linspace(0, self.config.terminal_time, trajectory.shape[0])
-        
+
         for i in range(self.config.dim_X):
             # Plot each sample separately
             for sample_idx in range(trajectory.shape[1]):
                 plt.plot(t, trajectory[:, sample_idx, i])
-        
+
         plt.title('Trajectory of the model')
         plt.xlabel('t')
         plt.ylabel('X(t)')
         plt.grid()
         plt.show()
-        
+
 class WholeNet(torch.nn.Module):
     """Building the neural network architecture"""
     def __init__(self):
@@ -477,7 +506,7 @@ class WholeNet(torch.nn.Module):
         r_monte_BLMX = torch.zeros(sample_size, self.config.dim_L, self.config.MC_sample_size, self.config.dim_X, dtype=torch.float32).to(device)  # Shape: (sample_size, dim_L, MC_sample_size, dim_X)
         int_Hu = 0.0  # The constraint term
         MC_sample_points_BLMX = self.config.MC_sample_points_LMX.repeat(sample_size, 1, 1, 1)  # Shape: (sample_size, dim_L, MC_sample_size, dim_X)
-        
+
         for i in range(0, self.config.time_step_count):
             u_BU = self.u_net((t[i], X_BX))   # Shape: (sample_size, dim_u)
             q_BXW = self.q_net((t[i], X_BX))   # Shape: (sample_size, dim_X, dim_W)
@@ -485,15 +514,15 @@ class WholeNet(torch.nn.Module):
                 # Calculate the r_nets for each jump
                 r_jump_BLCX[:, l, :, :] = self.r_nets[l]((t[i], X_BX, jump_sizes_BLCX[:, l, :, :]))
                 r_monte_BLMX[:, l, :, :] = self.r_nets[l]((t[i], X_BX, MC_sample_points_BLMX[:, l, :, :]))
-            
-            
+
+
             Hu = torch.einsum('bjn,bj->bn', self.config.drift_u(t[i], X_BX, u_BU), p_BX) + \
                 torch.einsum('bjkn,bjk->bn', self.config.diffusion_u(t[i], X_BX, u_BU), q_BXW)
-            
+
             for l in range(self.config.dim_L):
                 Hu = Hu + self.config.jump_intensity[l] * torch.mean(torch.einsum('bjmu,bjm->bu', self.config.eta_u(t[i], X_BX, u_BU, MC_sample_points_BLMX[:, l, :, :]), r_monte_BLMX[:, l, :, :]), dim=1)
 
-            int_Hu = int_Hu + Hu**2 * self.config.delta_t # NOTE: this is where the square was missing! 
+            int_Hu = int_Hu + Hu**2 * self.config.delta_t # NOTE: this is where the square was missing!
 
             # Update p
             Hx = torch.einsum('bjn,bj->bn', self.config.drift_x(t[i], X_BX, u_BU), p_BX)
@@ -522,11 +551,11 @@ class FNNetQ(torch.nn.Module):
     def __init__(self):
         super(FNNetQ, self).__init__()
         self.config = Config()
-        num_hiddens = [self.config.dim_X + 10, 
-                       self.config.dim_X * 2 + 10, 
+        num_hiddens = [self.config.dim_X + 10,
+                       self.config.dim_X * 2 + 10,
                        self.config.dim_X * self.config.dim_W + 10]
-        
-        # Create layer lists 
+
+        # Create layer lists
         self.bn_layers = torch.nn.ModuleList([
             torch.nn.BatchNorm1d(
                 1 + self.config.dim_X,  # Shape of input (t, X)
@@ -534,9 +563,9 @@ class FNNetQ(torch.nn.Module):
                 eps=1e-6
             )
         ])
-        
+
         self.dense_layers = torch.nn.ModuleList()
-        
+
         # Hidden layers
         for i in range(len(num_hiddens)):
             input_size = 1 + self.config.dim_X if i == 0 else num_hiddens[i-1]
@@ -550,7 +579,7 @@ class FNNetQ(torch.nn.Module):
                     eps=1e-6
                 )
             )
-        
+
         # Output layer: output dim_X * dim_W values per sample
         self.dense_layers.append(
             torch.nn.Linear(num_hiddens[-1], self.config.dim_X * self.config.dim_W)
@@ -562,7 +591,7 @@ class FNNetQ(torch.nn.Module):
                 eps=1e-6
             )
         )
-        
+
         # Initialize weights similar to TF
         for i, module in enumerate(self.modules()):
             if isinstance(module, torch.nn.BatchNorm1d):
@@ -575,12 +604,12 @@ class FNNetQ(torch.nn.Module):
         ts = torch.ones(x.shape[0], 1, dtype=torch.float32).to(x.device) * t  # Ensure correct shape and device
         x = torch.cat([ts, x], dim=1)  # Concatenate along the feature dimension
         x = self.bn_layers[0](x)
-        
+
         for i in range(len(self.dense_layers) - 1):
             x = self.dense_layers[i](x)
             x = self.bn_layers[i+1](x)
             x = torch.nn.functional.relu(x)
-        
+
         x = self.dense_layers[-1](x)
         x = self.bn_layers[-1](x)
         # Reshape to (batch_size, dim_X, dim_W)
@@ -593,8 +622,8 @@ class FNNetU(torch.nn.Module):
         super(FNNetU, self).__init__()
         self.config = Config()
         num_hiddens = [self.config.dim_X+10, self.config.dim_X+10, self.config.dim_X+10]
-        
-        # Create layer lists 
+
+        # Create layer lists
         self.bn_layers = torch.nn.ModuleList([
             torch.nn.BatchNorm1d(
                 1 + self.config.dim_X,  # Shape of input (t, X)
@@ -602,18 +631,18 @@ class FNNetU(torch.nn.Module):
                 eps=1e-6
             )
         ])
-        
+
         self.dense_layers = torch.nn.ModuleList()
-        
+
         # Hidden layers
         for i in range(len(num_hiddens)):
             # Input size for the first layer
             input_size = 1 + self.config.dim_X if i == 0 else num_hiddens[i-1]
-            
+
             self.dense_layers.append(
                 torch.nn.Linear(input_size, num_hiddens[i], bias=False)
             )
-            
+
             self.bn_layers.append(
                 torch.nn.BatchNorm1d(
                     num_hiddens[i],
@@ -621,12 +650,12 @@ class FNNetU(torch.nn.Module):
                     eps=1e-6
                 )
             )
-        
+
         # Output layer
         self.dense_layers.append(
             torch.nn.Linear(num_hiddens[-1], self.config.dim_u)
         )
-        
+
         self.bn_layers.append(
             torch.nn.BatchNorm1d(
                 self.config.dim_u,
@@ -634,7 +663,7 @@ class FNNetU(torch.nn.Module):
                 eps=1e-6
             )
         )
-        
+
         # Initialize weights similar to TF
         for i, module in enumerate(self.modules()):
             if isinstance(module, torch.nn.BatchNorm1d):
@@ -647,26 +676,26 @@ class FNNetU(torch.nn.Module):
         ts = torch.ones(x.shape[0], 1, dtype=torch.float32).to(x.device) * t  # Ensure correct shape and device
         x = torch.cat([ts, x], dim=1)  # Concatenate along the feature dimension
         x = self.bn_layers[0](x)
-        
+
         for i in range(len(self.dense_layers) - 1):
             x = self.dense_layers[i](x)
             x = self.bn_layers[i+1](x)
             x = torch.nn.functional.relu(x)
-        
+
         x = self.dense_layers[-1](x)
         x = self.bn_layers[-1](x)
         return x
-    
+
 class FNNetR(torch.nn.Module):
     """ Define the feedforward neural network """
     def __init__(self):
         super(FNNetR, self).__init__()
         self.config = Config()
-        num_hiddens = [self.config.dim_X * 2 + 10, 
-                       self.config.dim_X * 4 + 10, 
+        num_hiddens = [self.config.dim_X * 2 + 10,
+                       self.config.dim_X * 4 + 10,
                        self.config.dim_X * 2 + 10]
-        
-        # Create layer lists 
+
+        # Create layer lists
         self.bn_layers = torch.nn.ModuleList([
             torch.nn.BatchNorm1d(
                 1 + self.config.dim_X * 2,  # Shape of input (t, X, z)
@@ -674,9 +703,9 @@ class FNNetR(torch.nn.Module):
                 eps=1e-6
             )
         ])
-        
+
         self.dense_layers = torch.nn.ModuleList()
-        
+
         # Hidden layers
         for i in range(len(num_hiddens)):
             input_size = 1 + self.config.dim_X * 2 if i == 0 else num_hiddens[i-1]
@@ -690,7 +719,7 @@ class FNNetR(torch.nn.Module):
                     eps=1e-6
                 )
             )
-        
+
         # Output layer: output dim_X values per sample
         self.dense_layers.append(
             torch.nn.Linear(num_hiddens[-1], self.config.dim_X)
@@ -702,7 +731,7 @@ class FNNetR(torch.nn.Module):
                 eps=1e-6
             )
         )
-        
+
         # Initialize weights similar to TF
         for i, module in enumerate(self.modules()):
             if isinstance(module, torch.nn.BatchNorm1d):
@@ -715,10 +744,10 @@ class FNNetR(torch.nn.Module):
         # Shape of z: (batch_size, jump_counts, dim_X)
 
         # Reshape t: (1) -> (batch_size, jump_counts, 1)
-        t_ = torch.full((z.shape[0], z.shape[1], 1), t, dtype=torch.float32, device=device)  
+        t_ = torch.full((z.shape[0], z.shape[1], 1), t, dtype=torch.float32, device=device)
 
         # Reshape x: (batch_size, dim_X) -> (batch_size, jump_counts, dim_X)
-        x_ = x.unsqueeze(1).expand(-1, z.shape[1], -1)  
+        x_ = x.unsqueeze(1).expand(-1, z.shape[1], -1)
 
         # Shape of inputs: (batch_size, jump_counts, dim_X * 2 + 1)
         inputs = torch.cat([t_, x_, z], dim=2)
@@ -727,12 +756,12 @@ class FNNetR(torch.nn.Module):
         inputs = inputs.view(-1, inputs.shape[2])
 
         inputs = self.bn_layers[0](inputs)
-        
+
         for i in range(len(self.dense_layers) - 1):
             inputs = self.dense_layers[i](inputs)
             inputs = self.bn_layers[i+1](inputs)
             inputs = torch.nn.functional.relu(inputs)
-        
+
         inputs = self.dense_layers[-1](inputs)
         inputs = self.bn_layers[-1](inputs)
         # Reshape to (batch_size, jump_counts, dim_X)
@@ -742,12 +771,12 @@ class FNNetR(torch.nn.Module):
 
 
 def main():
-    # Set the random seed for reproducibility   
+    # Set the random seed for reproducibility
     torch.manual_seed(42)
     config = Config()
     print("starting the code")
     print("target mean A: ", config.TARGET_MEAN_A)
-    
+
     # config.sample_stock_price(sample_size=10)
     x_0_values = np.array([0.7, 0.8, 0.9, 1.0, 1.1, 1.2])
     V_for_different_x0 = []
@@ -761,12 +790,12 @@ def main():
         # generate the trajectory
         trajectory = solver.generate_trajectoy(256, x_0_value=x_0)
         # plot the trajectory
-        
+
         solver.plot_trajectory(trajectory)
-        
+
         # print('Trajectory shape after the plot: ', trajectory.shape)
         # compute the cost functional for each of the trajectories. get the mean and std
-        cost_functional = np.mean(np.sum((trajectory - config.TARGET_MEAN_A) ** 2, axis=2), axis=0) 
+        cost_functional = np.mean(np.sum((trajectory - config.TARGET_MEAN_A) ** 2, axis=2), axis=0)
         print("cost finctional shape: ", cost_functional.shape)
         print('Cost functional: ', cost_functional)
         print('Mean: ', np.mean(cost_functional))
@@ -792,14 +821,14 @@ def main():
         plt.ylabel('t')
         plt.grid()
         plt.show()
-            
-    
+
+
     ### plot the cost functional for different x_0 values. add a transparent area for +-1 std
     plt.figure()
     plt.plot(x_0_values, V_for_different_x0, label='Mean Cost Functional')
-    plt.fill_between(x_0_values, 
-                     np.array(V_for_different_x0) - np.array(std_for_different_x0), 
-                     np.array(V_for_different_x0) + np.array(std_for_different_x0), 
+    plt.fill_between(x_0_values,
+                     np.array(V_for_different_x0) - np.array(std_for_different_x0),
+                     np.array(V_for_different_x0) + np.array(std_for_different_x0),
                      alpha=0.2, label='1 Std Dev')
     plt.title('Cost Functional for Different Initial Values of X0')
     plt.xlabel('Initial Value of X0')
@@ -815,7 +844,7 @@ def main():
     # save the plot
     plt.savefig('cost_functional_2.png')
     plt.close()
-    
+
 
 if __name__ == '__main__':
     main()
