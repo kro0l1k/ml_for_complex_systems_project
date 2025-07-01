@@ -22,14 +22,15 @@ class Config(object):
         ###
         # training config: 
         self.valid_size = 512
-        self.batch_size = 512 # NOTE: how big should the batch size be? 
-        self.num_iterations = 100 #1000 # NOTE : SMALLER FOR TESTING. CHANGE BACK TO 5000
-        self.logging_frequency = 20 #100 # NOTE: SMALLER FOR TESTING. CHANGE BACK TO 2000
+        self.batch_size = 512               # NOTE: how big should the batch size be? 
+        self.num_iterations = 1000 #1000     # NOTE : SMALLER FOR TESTING. CHANGE BACK TO 5000
+        self.logging_frequency = 100 #100    # NOTE: SMALLER FOR TESTING. CHANGE BACK TO 2000
         self.lr_values = [0.1, 0.01, 0.005]
 
         self.lr_boundaries = [int(0.2 * self.num_iterations), int(0.8 * self.num_iterations)] 
         ###
-        self.TARGET_MEAN_A = 150
+        self.TARGET_MEAN_A = 1.10
+        self.LAMBDA = 0.05 # 0.05
 
         # make sure L is one, if not throw a warning
         if self.dim_L != 1:
@@ -47,16 +48,16 @@ class Config(object):
         self.jump_size_std = np.sqrt((np.exp(self.log_normal_sigma ** 2) - 1) * np.exp(2 * self.log_normal_mu + self.log_normal_sigma ** 2))
 
         # The terminal time in years
-        self.terminal_time = 4.0
-        self.tics_per_unit_of_time = 100  # The number of tics for one year, e.g. 100 tics for one year means 1 tic is 1/100 year
+        self.terminal_time = 1.0
+        self.tics_per_unit_of_time = 1000  # The number of tics for one year, e.g. 100 tics for one year means 1 tic is 1/100 year
         
         # Roughly the number of trading days
         self.time_step_count = math.floor(self.terminal_time * self.tics_per_unit_of_time)  # 20 trading days in a month. keep it small for testing.
         # print(f"Time step count: {self.time_step_count}")
         self.delta_t = float(self.terminal_time) / self.time_step_count
         # print(f"Delta t: {self.delta_t}")
-        self.MC_sample_size = 10  # The integer M
-        # Generate sample points for integration with respect to nu 
+        self.MC_sample_size = 350  # The integer M
+         # Generate sample points for integration with respect to nu 
         MC_sample_points_LMX = np.random.lognormal(mean=self.log_normal_mu[0], sigma=self.log_normal_sigma[0], size=(self.dim_L, self.MC_sample_size, self.dim_X)) - 1
         self.MC_sample_points_LMX = torch.tensor(MC_sample_points_LMX, dtype=torch.float32).to(device)
 

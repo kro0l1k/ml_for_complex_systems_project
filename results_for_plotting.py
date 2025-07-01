@@ -1,10 +1,10 @@
 import numpy as np
 
-x0_values  = np.array([70, 80, 90, 100, 110, 120])
+x0_values  = np.array([0.7, 0.8, 0.9, 1.0, 1.1, 1.2])
 
+our_algorithm_results =    [np.float32(0.17869906), np.float32(0.086591415), np.float32(0.040107664), np.float32(0.025687467), np.float32(0.011112742), np.float32(0.03343312)]
 
-our_algorithm_results =        [5262.9946, 3785.984, 2560.2808, 1576.4448, 840.0095, 351.04523]# this is u = 0 or u = 1
-true_values =    [4003.549425773539, 2497.0066019095493, 1670.735302181939, 1038.1200451428583, 547.0309347170381, 259.7601895931915]
+true_values =  [0.1264747199814257, 0.06254016634289333, 0.022260948156588255, 0.0025428038123567146, 0.003184165761783062, 0.02533151358881074]
 import matplotlib.pyplot as plt
 # Set up the plot with professional styling
 plt.figure(figsize=(10, 6))

@@ -6,7 +6,7 @@ from scipy.stats import multivariate_normal as normal
 from collections import namedtuple
 import matplotlib.pyplot as plt
 
-LAMBDA_1 = 0.5
+LAMBDA_1 = 0.005
 LAMBDA_2 = 0.05
 # Set default tensor type to float
 torch.set_default_dtype(torch.float32)
@@ -87,7 +87,7 @@ class Solver(object):
         t = np.arange(0, self.config.time_step_count) * self.config.delta_t
 
         for i in range(0, self.config.time_step_count):
-            current_time = t * self.config.delta_t
+            current_time = i * self.config.delta_t
             u_BU = self.model.u_net((current_time, X_BX))  # Access u_net through self.model
             
             X_BX = X_BX + self.config.drift(t[i], X_BX, u_BU) * self.config.delta_t + \
@@ -377,7 +377,7 @@ class Config(object):
         # print(f"Time step count: {self.time_step_count}")
         self.delta_t = float(self.terminal_time) / self.time_step_count
         # print(f"Delta t: {self.delta_t}")
-        self.MC_sample_size = 100  # The integer M
+        self.MC_sample_size = 130  # The integer M
         # Generate sample points for integration with respect to nu 
         MC_sample_points_LMX = np.random.lognormal(mean=self.log_normal_mu[0], sigma=self.log_normal_sigma[0], size=(self.dim_L, self.MC_sample_size, self.dim_X)) - 1
         self.MC_sample_points_LMX = torch.tensor(MC_sample_points_LMX, dtype=torch.float32).to(device)

@@ -100,7 +100,7 @@ class ClosedFormSolver(object):
                 ax.grid()
 
             plt.tight_layout()
-            plt.show()
+            # plt.show()
             
         # inspect_the_feedback_law() # NOTE: uncomment to see V(t,x) and u_star(t,x)
         
@@ -132,7 +132,7 @@ class ClosedFormSolver(object):
         plt.xlabel('t')
         plt.ylabel('$S_1(t)$')
         plt.grid()
-        plt.show()
+        # plt.show()
         
         # get the final value of the portfolio
         S_T = S[-1, :, :]
@@ -147,7 +147,7 @@ class ClosedFormSolver(object):
 
 def main():
     
-    x_0_values = np.array([70, 80, 90, 100, 110, 120])
+    x_0_values = np.array([0.7, 0.8, 0.9, 1.0, 1.1, 1.2])
     V_for_different_x0 = []
     std_for_different_x0 = []
 

@@ -1,3 +1,7 @@
+import os
+os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
+
+
 import time
 import numpy as np
 import torch
@@ -5,7 +9,7 @@ import math
 from scipy.integrate import solve_ivp
 import matplotlib.pyplot as plt
 
-LAMBDA = 0.1 # was 0.05
+LAMBDA = 0.001 # was 0.05
 
 # Set default tensor type to float
 torch.set_default_dtype(torch.float32)
@@ -13,21 +17,22 @@ torch.set_default_dtype(torch.float32)
 # Check for available devices 
 device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
 print(f"Using device: {device}")
+print(" training using LAMBDA: ", LAMBDA)
 
 class Solver(object):
     def __init__(self, config):
         self.valid_size = 256
         self.batch_size = 256 # NOTE: how big should the batch size be? 
-        self.num_iterations = 1000 # NOTE : SMALLER FOR TESTING. CHANGE BACK TO 5000
+        self.num_iterations = 500 # NOTE : SMALLER FOR TESTING. CHANGE BACK TO 5000
         self.logging_frequency = 100 # NOTE: SMALLER FOR TESTING. CHANGE BACK TO 2000
         self.lr_values = [5e-3, 5e-3, 5e-3]
-        
-        self.lr_boundaries = [2000, 4000] # NOTE: does this maek sense?
+
+        self.lr_boundaries = [2000, 4000] # NOTE: does this make sense?
         self.config = config
 
         self.model = WholeNet(config).to(device)  # Move model to the selected device
-        print("y_intial: ", self.model.p_init.detach().cpu().numpy())
-        
+        print("y_initial: ", self.model.p_init.detach().cpu().numpy())
+
         # PyTorch doesn't have PiecewiseConstantDecay directly, so we'll use a custom scheduler
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr_values[0], eps=1e-8)
         self.scheduler = torch.optim.lr_scheduler.MultiStepLR(
@@ -119,7 +124,7 @@ class Solver(object):
         plt.xlabel('t')
         plt.ylabel('X(t)')
         plt.grid()
-        plt.show()
+        # plt.show() # to make it run 
         
 class WholeNet(torch.nn.Module):
     """Building the neural network architecture"""
