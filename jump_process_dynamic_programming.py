@@ -32,8 +32,8 @@ class Config(object):
         self.valid_size = 512
         self.batch_size = 256 # NOTE: how big should the batch size be?
         self.MC_sample_size = 256  # The integer M
-        self.num_iterations = 3000
-        self.logging_frequency = 100
+        self.num_iterations = 10000
+        self.logging_frequency = 10
         self.lr_values = [0.1, 0.01, 0.005]
 
         self.lr_boundaries = [int(0.2 * self.num_iterations), int(0.8 * self.num_iterations)]
@@ -57,7 +57,7 @@ class Config(object):
 
         # The terminal time in years
         self.terminal_time = 1.0
-        self.tics_per_unit_of_time = 250  # The number of tics for one year, e.g. 100 tics for one year means 1 tic is 1/100 year
+        self.tics_per_unit_of_time = 25  # The number of tics for one year, e.g. 100 tics for one year means 1 tic is 1/100 year
 
         # Roughly the number of trading days
         self.time_step_count = math.floor(self.terminal_time * self.tics_per_unit_of_time)  # 20 trading days in a month. keep it small for testing.
@@ -367,6 +367,7 @@ class Solver(object):
         training_history = np.zeros((self.num_iterations+1, 3))  # Store step, loss, performance
         validation_data = self.config.sample(self.valid_size)
         validation_history = np.zeros((self.num_iterations+1, 3))  # Store step, loss, performance
+        latest_validation_costs = np.zeros(100)  # Store the last 50 validation costs for early stopping
 
         for step in range(self.num_iterations+1):
             # Custom learning rate adjustment
@@ -377,15 +378,22 @@ class Solver(object):
 
             # Calculate validation loss and log it
             if step % self.logging_frequency == 0:
-                with torch.no_grad():
-                    loss_, performance_, ratio_ = self.model(validation_data)
-                    p_init_euclidean = np.linalg.norm(self.model.p_init.detach().cpu().numpy())
-                    elapsed_time = time.time() - start_time
-                    print(f"step: {step:5d}, loss: {loss_.item():.4e}, ||Y0||: {p_init_euclidean:.4e}, cost functional: {-performance_.item():.4e}, "
-                          f"elapsed time: {int(elapsed_time):3d}, ratio: {ratio_.item():.4e}")
-                    validation_history[step, 0] = step
-                    validation_history[step, 1] = loss_.item()
-                    validation_history[step, 2] = performance_.item()
+                loss_, performance_, ratio_ = self.model(validation_data)
+                cost_ = -performance_.item()
+                p_init_euclidean = np.linalg.norm(self.model.p_init.detach().cpu().numpy())
+                elapsed_time = time.time() - start_time
+                print(f"step: {step:5d}, loss: {loss_.item():.4e}, cost functional: {cost_:.4e}, "
+                      f"elapsed time: {int(elapsed_time):5d}s")
+                validation_history[step, 0] = step
+                validation_history[step, 1] = loss_.item()
+                validation_history[step, 2] = performance_.item()
+                latest_validation_costs = np.roll(latest_validation_costs, -1)
+                latest_validation_costs[-1] = cost_
+                # Early stopping condition
+                if step >= self.logging_frequency * len(latest_validation_costs) and np.std(latest_validation_costs) / np.mean(latest_validation_costs) < 1e-2:
+                    print(f"std / mean of the latest validation costs is {np.std(latest_validation_costs) / np.mean(latest_validation_costs):.4f}, stopping training.")
+                    training_history = training_history[:step]
+                    break
             else:
                 validation_history[step, 1] = -1
 
@@ -474,32 +482,25 @@ class WholeNet(torch.nn.Module):
             requires_grad=True
         )
         self.x_0_value = x_0_value
-        self.q_net = FNNetQ()
+        self.v_x_net = FNNetVx()
         self.u_net = FNNetU()
-        self.r_nets = torch.nn.ModuleList()
-        for _ in range(self.config.dim_L):
-            self.r_nets.append(FNNetR())
 
-    def forward(self, sample, training=True):
+    def forward(self, sample, x_0_value=1.0, training=True):
         delta_W_TBW, jump_times_BLC, jump_mask_TBLC, jump_sizes_BLCX = sample
         sample_size = delta_W_TBW.shape[1]
         jump_mask_TBL = torch.sum(jump_mask_TBLC, dim=3)  # Shape: (time_step_count, sample_size, dim_L, jump_counts)
         jump_sizes_TBLX = torch.einsum('tblc,blcx->tblx', jump_mask_TBLC, jump_sizes_BLCX)  # Shape: (time_step_count, sample_size, dim_L, dim_X)
-        jump_counts = jump_mask_TBLC.shape[3]
         t = np.arange(0, self.config.time_step_count) * self.config.delta_t
         X_BX = torch.ones(sample_size, self.config.dim_X).to(device) * self.x_0_value  # Shape: (sample_size, dim_X)
         p_BX = self.p_init.repeat(sample_size, 1)  # Shape: (sample_size, dim_X)
-        int_Hu = torch.zeros(sample_size, self.config.dim_X).to(device)  # The constraint term
+        int_p_minus_V_x = 0.0
+        int_Hu = 0.0  # The constraint term
         MC_sample_points_BMX = self.config.generate_MC_sample_points(sample_size)  # Shape: (sample_size, MC_sample_size, dim_X)
-        # closed_form_solver = ClosedFormSolver(self.x_0_value)
 
         for i in range(0, self.config.time_step_count):
-            u_BU = self.u_net((t[i], X_BX))   # Shape: (sample_size, dim_u)
-            # u_BU = closed_form_solver.u_star(t[i], X_BX)    # Shape: (sample_size, dim_u)
-            q_BXW = self.q_net((t[i], X_BX))   # Shape: (sample_size, dim_X, dim_W)
-            r_jump_BCX = self.r_nets[0]((t[i], X_BX, jump_sizes_BLCX[:, 0, :, :]))
-            r_monte_BMX = self.r_nets[0]((t[i], X_BX, MC_sample_points_BMX))
-
+            r_jump_BLX = torch.zeros(sample_size, self.config.dim_L, self.config.dim_X, dtype=torch.float32).to(device)  # Shape: (sample_size, dim_L, jump_counts, dim_X)
+            r_monte_BLMX = torch.zeros(sample_size, self.config.dim_L, self.config.MC_sample_size, self.config.dim_X, dtype=torch.float32).to(device)  # Shape: (sample_size, dim_L, MC_sample_size, dim_X)
+            # Compute value of q according to the DP relation
             u_BU = self.u_net((t[i], X_BX))   # Shape: (sample_size, dim_u)
             X_BX = X_BX.requires_grad_(True)
             V_x_BX = self.v_x_net((t[i], X_BX))
@@ -519,34 +520,42 @@ class WholeNet(torch.nn.Module):
 
             # Compute value of r according to the DP relation
             for l in range(self.config.dim_L):
-                r_jump_BCX[:, l, :] = self.v_x_net((t[i], X_BX + u_BU * jump_sizes_TBLX[i, :, l, :])) - self.v_x_net((t[i], X_BX))
+                r_jump_BLX[:, l, :] = self.v_x_net((t[i], X_BX + u_BU * jump_sizes_TBLX[i, :, l, :])) - self.v_x_net((t[i], X_BX))
 
                 X_big = X_BX.unsqueeze(1).repeat(1, self.config.MC_sample_size, 1).view(sample_size*self.config.MC_sample_size, self.config.dim_X)
                 u_big = u_BU.unsqueeze(1).repeat(1, self.config.MC_sample_size, 1).view(sample_size*self.config.MC_sample_size, self.config.dim_X)
-                pts   = self.config.MC_sample_points_LMX[l,:,:].unsqueeze(0).repeat(sample_size,1,1).view(sample_size*self.config.MC_sample_size, self.config.dim_X)
-                r_monte_BMX = (self.v_x_net((t[i], X_big + u_big*pts)) - self.v_x_net((t[i], X_big))).view(sample_size, self.config.MC_sample_size, self.config.dim_X)
+                pts   = MC_sample_points_BMX.view(sample_size*self.config.MC_sample_size, self.config.dim_X)
+                r_monte_BLMX[:, l, :, :] = (self.v_x_net((t[i], X_big + u_big*pts)) - self.v_x_net((t[i], X_big))).view(sample_size, self.config.MC_sample_size, self.config.dim_X)
+
 
             Hu = torch.einsum('bjn,bj->bn', self.config.drift_u(t[i], X_BX, u_BU), p_BX) + \
                 torch.einsum('bjkn,bjk->bn', self.config.diffusion_u(t[i], X_BX, u_BU), q_BXW)
-            Hu = Hu + self.config.jump_intensity[0] * torch.mean(MC_sample_points_BMX * r_monte_BMX, dim=1)
+
+            for l in range(self.config.dim_L):
+                Hu = Hu + self.config.jump_intensity[l] * torch.mean(torch.einsum('bmx,bmx->bmx', MC_sample_points_BMX, r_monte_BLMX[:, l, :, :]), dim=1)
+
             int_Hu = int_Hu + Hu**2 * self.config.delta_t # NOTE: this is where the square was missing!
 
             # Update p
             Hx = torch.einsum('bjn,bj->bn', self.config.drift_x(t[i], X_BX, u_BU), p_BX)
             p_BX = p_BX - Hx * self.config.delta_t + torch.einsum('bxw,bw->bx', q_BXW, delta_W_TBW[i, :, :])
-            p_BX = p_BX + torch.einsum('bc,bcx->bx', jump_mask_TBLC[i, :, 0, :], r_jump_BCX)
-            p_BX = p_BX - self.config.jump_intensity[0] * torch.mean(r_monte_BMX, dim=1) * self.config.delta_t
+            for l in range(self.config.dim_L):
+                p_BX = p_BX + torch.einsum('b,bx->bx', jump_mask_TBL[i, :, l], r_jump_BLX[:, l, :])
+                p_BX = p_BX - self.config.jump_intensity[l] * torch.mean(r_monte_BLMX[:, l, :, :], dim=1) * self.config.delta_t
 
             # Update X
             X_BX = X_BX + self.config.drift(t[i], X_BX, u_BU) * self.config.delta_t + \
-                torch.einsum('bxw,bw->bx', self.config.diffusion(t[i], X_BX, u_BU), delta_W_TBW[i, :, :]) + \
-                u_BU * torch.einsum('bc,bcx->bx', jump_mask_TBLC[i, :, 0, :], jump_sizes_BLCX[:, 0, :, :]) - \
-                u_BU * self.config.jump_intensity[0] * self.config.jump_size_mean[0] * self.config.delta_t
+                torch.einsum('bxw,bw->bx', self.config.diffusion(t[i], X_BX, u_BU), delta_W_TBW[i, :, :])
+            for l in range(self.config.dim_L):
+                X_BX = X_BX + u_BU * jump_sizes_TBLX[i, :, l, :]
+                X_BX = X_BX - self.config.jump_intensity[l] * (np.exp(self.config.log_normal_mu[l] + 0.5 * self.config.log_normal_sigma[l] ** 2) - 1)* u_BU * self.config.delta_t
+            int_p_minus_V_x = int_p_minus_V_x + torch.sum((p_BX - self.v_x_net((t[i], X_BX)))**2, dim=1, keepdim=True) * self.config.delta_t
 
+            int_p_minus_V_x = int_p_minus_V_x + torch.sum((p_BX - self.v_x_net((t[i], X_BX)))**2, dim=1, keepdim=True) * self.config.delta_t
         performance = torch.mean(-0.5 * (X_BX - self.config.TARGET_MEAN_A)**2)
 
         terminal_value_loss = p_BX - self.config.g_x(X_BX)
-        loss =  torch.mean(torch.sum(terminal_value_loss**2, 1, keepdim=True)) + eta_1 * torch.mean(int_Hu) - eta_2 * performance
+        loss =  torch.mean(torch.sum(terminal_value_loss**2, 1, keepdim=True) + eta_3 * int_p_minus_V_x + eta_1 * int_Hu) - eta_2 * performance
         ratio = torch.mean(torch.sum(terminal_value_loss**2, 1, keepdim=True)) / torch.mean(int_Hu)
 
         return loss, performance, ratio
@@ -556,7 +565,7 @@ class FNNetVx(torch.nn.Module):
     def __init__(self):
         super(FNNetVx, self).__init__()
         self.config = Config()
-        num_hiddens = [25, 25, 25]
+        num_hiddens = [20, 20, 20]
 
         # Create layer lists
         self.bn_layers = torch.nn.ModuleList([
@@ -696,18 +705,19 @@ class FNNetU(torch.nn.Module):
 
 def main():
     # Set the random seed for reproducibility
-    torch.manual_seed(42)
+    torch.manual_seed(777)
     config = Config()
     print("starting the code")
     print("target mean A: ", config.TARGET_MEAN_A)
 
-    # config.sample_stock_price(sample_size=10)
-    x_0_values = np.array([0.7, 0.8, 0.9, 1.0, 1.1, 1.2])
+    x_0_values = np.array([0.7, 0.7, 0.7, 0.7, 0.7, 0.7, 0.7, 0.7, 0.7])
+    eta_1_values = np.array([10, 1, 0.1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7])
     V_for_different_x0 = []
     closed_form_V_for_different_x0 = []
     std_for_different_x0 = []
-    for x_0 in x_0_values:
-        print('\n\n\n x_0: ', x_0)
+    for x_0, eta_1_ in zip(x_0_values, eta_1_values):
+        eta_1 = eta_1_
+        print('\n\n\n x_0: ', x_0, 'eta_1: ', eta_1, 'eta_2: ', eta_2, 'eta_3: ', eta_3)
         # Initialize the solver with the initial value of X0
         solver = Solver(x_0_value=x_0)
         closed_form_solver = ClosedFormSolver(x_0_value=x_0)

@@ -5,10 +5,11 @@ import math
 from scipy.integrate import solve_ivp
 import matplotlib.pyplot as plt
 
-LAMBDA = 0.05 # was 0.05
-MC_SAM_SIZE = 250
+eta_1 = 0.01 # or 0.05
+eta_2 = 0.5 # or 0
+MC_SAM_SIZE = 256
 BATCH_SIZE = 256
-NUM_ITERATIONS = 2000
+NUM_ITERATIONS = 5000
 LOGGING_FREQUENCY = 100
 TERMINAL_TIME = 1.0
 TICKS_PER_SECOND = 250
@@ -20,7 +21,8 @@ torch.set_default_dtype(torch.float32)
 device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
 print(" --- config params -----")
 print(f"Using device: {device}, LQR example")
-print("training using LAMBDA: ", LAMBDA)
+print("training using eta_1: ", eta_1)
+print("training using eta_2: ", eta_2)
 print("using MC_SAMPLE_SIZE = ", MC_SAM_SIZE)
 print("using NUM_ITERATIONS  = ", NUM_ITERATIONS )
 print("using TERMINA TIME = ", TERMINAL_TIME)
@@ -68,30 +70,30 @@ class Solver(object):
             # Calculate validation loss and log it
             if step % self.logging_frequency == 0:
                 with torch.no_grad():
-                    loss_, performance_, ratio_ = self.model(validation_data)
+                    loss_, cost_, ratio_ = self.model(validation_data)
                     p_init_euclidean = np.linalg.norm(self.model.p_init.detach().cpu().numpy())
                     elapsed_time = time.time() - start_time
-                    print(f"step: {step:5d}, loss: {loss_.item():.4e}, ||Y0||: {p_init_euclidean:.4e}, cost functional: {-performance_.item():.4e}, "
+                    print(f"step: {step:5d}, loss: {loss_.item():.4e}, ||Y0||: {p_init_euclidean:.4e}, cost functional: {cost_.item():.4e}, "
                           f"elapsed time: {int(elapsed_time):3d}, ratio: {ratio_.item():.4e}")
                     validation_history[step, 0] = step
                     validation_history[step, 1] = loss_.item()
-                    validation_history[step, 2] = performance_.item()
+                    validation_history[step, 2] = - cost_.item()
             else:
-                validation_history[step, 0] = None
+                validation_history[step, 1] = -1
 
             # Gradient descent
             self.optimizer.zero_grad()
-            loss, performance, ratio = self.model(self.config.sample(self.batch_size))
+            loss, cost, ratio = self.model(self.config.sample(self.batch_size), training=True)
             training_history[step, 0] = step
             training_history[step, 1] = loss.item()
-            training_history[step, 2] = performance.item()
+            training_history[step, 2] = -cost.item()
             loss.backward()
             self.optimizer.step()
 
             self.scheduler.step()
 
         self.training_history = training_history
-        validation_history = validation_history[validation_history[:, 0] != None]  # Remove rows where step is None
+        validation_history = validation_history[validation_history[:, 1] > 0]
         # Plot the graph of loss
         training_history = np.array(training_history)
         plt.plot(training_history[:, 0], training_history[:, 1], label='Training')
@@ -185,46 +187,34 @@ class WholeNet(torch.nn.Module):
         p_BX = self.p_init.repeat(sample_size, 1)  # Shape: (sample_size, dim_X)
         int_f = torch.zeros(sample_size, 1, dtype=torch.float32).to(device)  # The integral term for f
         int_Hu = 0.0  # The constraint term
-        MC_sample_points_BLMX = self.config.MC_sample_points_LMX.repeat(sample_size, 1, 1, 1)  # Shape: (sample_size, dim_L, MC_sample_size, dim_X)
+        MC_sample_points_BMX = self.config.jump_size_distribution.sample((sample_size, self.config.MC_sample_size)).to(device)  # Shape: (sample_size, dim_L, MC_sample_size, dim_X)
 
         for i in range(0, self.config.time_step_count):
             u_BU = self.u_net((t[i], X_BX))   # Shape: (sample_size, dim_u)
             q_BXW = self.q_net((t[i], X_BX))   # Shape: (sample_size, dim_X, dim_W)
             jump_counts_B = torch.poisson(self.config.jump_intensity(0, t[i], X_BX, u_BU) * self.config.delta_t)
             jump_sizes_BX = (jump_counts_B > 0) * self.config.jump_size_distribution.sample((sample_size,))
-            r_monte_BMX = self.r_nets[0]((t[i], X_BX, MC_sample_points_BLMX[:, 0, :, :]))
 
-            Hu = self.config.f_u(t[i], X_BX, u_BU) + \
-                torch.einsum('bjn,bj->bn', self.config.drift_u(t[i], X_BX, u_BU), p_BX) + \
-                torch.einsum('bjkn,bjk->bn', self.config.diffusion_u(t[i], X_BX, u_BU), q_BXW) + \
-                self.config.jump_intensity_u(0, t[i], X_BX, u_BU) * torch.mean(MC_sample_points_BLMX[:, 0, :, :] * (r_monte_BMX + p_BX.unsqueeze(1)) + X_BX.unsqueeze(1) * r_monte_BMX, dim=1)
+            Hu = - 2 * self.config.c_1 * u_BU + p_BX + 2 * self.config.Lambda_2 * u_BU * torch.mean( torch.sum(MC_sample_points_BMX * self.r_nets[0]((t[i], X_BX, MC_sample_points_BMX)), dim = 2, keepdim=True), dim=1)
 
-            int_Hu = int_Hu + torch.mean(torch.sum(Hu**2, dim=1, keepdim=True) * self.config.delta_t)
+            int_Hu = int_Hu + torch.mean(torch.sum(Hu**2, dim=1, keepdim=True)) * self.config.delta_t
 
             int_f = int_f + self.config.f(t[i], X_BX, u_BU) * self.config.delta_t
 
             # Update p
-            Hx = self.config.f_x(t[i], X_BX, u_BU) + \
-                torch.einsum('bjn,bj->bn', self.config.drift_x(t[i], X_BX, u_BU), p_BX) + \
-                torch.einsum('bjkn,bjk->bn', self.config.diffusion_x(t[i], X_BX, u_BU), q_BXW) + \
-                self.config.jump_intensity(0, t[i], X_BX, u_BU) * torch.mean(r_monte_BMX, dim=1)
-
-            p_BX = p_BX - Hx * self.config.delta_t + torch.einsum('bxw,bw->bx', q_BXW, delta_W_TBW[i, :, :])
-            for l in range(self.config.dim_L):
-                r_jump_B1X = self.r_nets[l]((t[i], X_BX, jump_sizes_BX.unsqueeze(1)))
-                p_BX = p_BX + r_jump_B1X[:, 0, :]
+            p_BX = p_BX + torch.einsum('bxw,bw->bx', q_BXW, delta_W_TBW[i, :, :]) + self.r_nets[0]((t[i], X_BX, jump_sizes_BX.unsqueeze(1)))[:, 0, :]
 
             # Update X
             X_BX = X_BX + self.config.drift(t[i], X_BX, u_BU) * self.config.delta_t + \
-                torch.einsum('bxw,bw->bx', self.config.diffusion(t[i], X_BX, u_BU), delta_W_TBW[i, :, :])
-            for l in range(self.config.dim_L):
-                X_BX += jump_sizes_BX
-
-        terminal_value_loss = p_BX - self.config.g_x(X_BX)
-        loss = torch.mean(torch.sum(terminal_value_loss**2, 1, keepdim=True)) + LAMBDA * int_Hu
-        ratio = torch.mean(torch.sum(terminal_value_loss**2, 1, keepdim=True)) / int_Hu
+                torch.einsum('bxw,bw->bx', self.config.diffusion(t[i], X_BX, u_BU), delta_W_TBW[i, :, :]) + \
+                jump_sizes_BX
 
         cost = torch.mean(int_f + self.config.g(X_BX))
+
+        terminal_value_loss = p_BX + self.config.g_x(X_BX)
+        loss = torch.mean(torch.sum(terminal_value_loss**2, 1, keepdim=True)) + eta_1 * int_Hu + eta_2 * cost
+        ratio = torch.mean(torch.sum(terminal_value_loss**2, 1, keepdim=True)) / int_Hu
+
         return loss, cost, ratio
 
 class FNNetQ(torch.nn.Module):
@@ -232,10 +222,7 @@ class FNNetQ(torch.nn.Module):
     def __init__(self, config):
         super(FNNetQ, self).__init__()
         self.config = config
-        num_hiddens = [self.config.dim_X + 10,
-                       self.config.dim_X * 2 + 10,
-                       self.config.dim_X * 3 + 10,
-                       self.config.dim_X * self.config.dim_W + 10]
+        num_hiddens = [20, 20, 20, 20]
 
         # Create layer lists
         self.bn_layers = torch.nn.ModuleList([
@@ -303,7 +290,7 @@ class FNNetU(torch.nn.Module):
     def __init__(self, config):
         super(FNNetU, self).__init__()
         self.config = config
-        num_hiddens = [self.config.dim_X+10, self.config.dim_X+10, self.config.dim_X+10, self.config.dim_X+10]
+        num_hiddens = [20, 20, 20, 20]
 
         # Create layer lists
         self.bn_layers = torch.nn.ModuleList([
@@ -373,10 +360,7 @@ class FNNetR(torch.nn.Module):
     def __init__(self, config):
         super(FNNetR, self).__init__()
         self.config = config
-        num_hiddens = [self.config.dim_X * 2 + 10,
-                       self.config.dim_X * 4 + 10,
-                       self.config.dim_X * 6 + 10,
-                       self.config.dim_X * 2 + 10]
+        num_hiddens = [20, 20, 20, 20]
 
         # Create layer lists
         self.bn_layers = torch.nn.ModuleList([
@@ -482,8 +466,6 @@ class Config(object):
         self.delta_t = float(self.terminal_time) / self.time_step_count
 
         self.MC_sample_size = MC_SAM_SIZE  # The integer M
-        # Generate sample points for integration with respect to jump_size_distribution
-        self.MC_sample_points_LMX = self.jump_size_distribution.sample((self.dim_L, self.MC_sample_size)).to(device)
 
 
         # Closed-form solution
@@ -503,7 +485,7 @@ class Config(object):
         plt.grid()
         plt.show()
 
-        int_h = np.trapezoid(self.h_closed_form, np.arange(0, self.time_step_count + 1) * self.delta_t)
+        int_h = np.trapz(self.h_closed_form, np.arange(0, self.time_step_count + 1) * self.delta_t)
         self.f_0 = 0.5 * (torch.trace(self.Sigma_XW @ self.Sigma_XW.T) + self.Lambda_1 * self.zeta) * \
                 torch.tensor(int_h, dtype=torch.float32, device=device)
 
@@ -580,12 +562,13 @@ class Config(object):
 
 # Set the random seed for reproducibility
 torch.manual_seed(42)
-dim = 5
+dim = 10
+sigma_XW = torch.rand(dim, dim, dtype=torch.float32, device=device)  # The diffusion coefficient Sigma
 config = Config(dim=dim,
                 sigma_XW= torch.rand(dim, dim, dtype=torch.float32, device=device),  # The diffusion coefficient Sigma
                 jump_Covariance_XX= torch.diag(torch.rand(dim, dtype=torch.float32, device=device))  # The covariance matrix of the jump sizes
                 )
-initial_value_first_components = np.linspace(-2.5, 2.5, int((2.5 - (-2.5)) / 0.5) + 1)
+initial_value_first_components = [-2.5, 0, 2.5]
 print("first components of X_init: ", initial_value_first_components)
 V_for_different_X_init = []
 closed_form_V_for_different_X_init = []
@@ -605,7 +588,8 @@ for x_1 in initial_value_first_components:
 
     # print('Trajectory shape after the plot: ', trajectory.shape)
     # compute the cost functional for each of the trajectories. get the mean and std
-    print("cost finctional shape: ", cost_functional.shape)
+    print("cost functional shape: ", cost_functional.shape)
+    print("cost functional: ", cost_functional)
     print('Mean: ', cost_functional.mean().item())
     print('Std: ', cost_functional.std().item())
     solver.plot_trajectory(trajectory)
@@ -644,10 +628,10 @@ print("Std: \n", std_for_different_X_init)
 plt.figure()
 plt.plot(initial_value_first_components, V_for_different_X_init, label='Mean Cost Functional')
 plt.fill_between(initial_value_first_components,
-                 np.array(V_for_different_X_init) - np.array(std_for_different_X_init),
-                 np.array(V_for_different_X_init) + np.array(std_for_different_X_init),
-                 alpha=0.2, label='1 Std Dev')
-plt.plot(initial_value_first_components, closed_form_V_for_different_X_init, label='Closed Form Solution', linestyle='--')
+                 np.array(V_for_different_X_init) - 0.2 * np.array(std_for_different_X_init),
+                 np.array(V_for_different_X_init) + 0.2 * np.array(std_for_different_X_init),
+                 alpha=0.2, label='0.2 Std Dev')
+plt.plot(initial_value_first_components, closed_form_V_for_different_X_init, label='Closed Form Cost Functional', linestyle='--')
 plt.title('Cost Functional for Different Initial Values of X0')
 plt.xlabel('Initial Value of X0')
 plt.ylabel('Cost Functional')
